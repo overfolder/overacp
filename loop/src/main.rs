@@ -1,8 +1,13 @@
 use anyhow::Result;
+use std::env;
+use std::io;
 use std::time::Duration;
+use tokio::runtime::Builder;
 use tracing::{error, info};
+use tracing_subscriber::EnvFilter;
 
 use overloop::acp::AcpClient;
+use overloop::agentic_loop::{self, LoopConfig};
 use overloop::config::Config;
 use overloop::llm;
 use overloop::tools::ToolRegistry;
@@ -11,11 +16,8 @@ fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("overloop=info".parse()?),
-        )
-        .with_writer(std::io::stderr)
+        .with_env_filter(EnvFilter::from_default_env().add_directive("overloop=info".parse()?))
+        .with_writer(io::stderr)
         .init();
 
     let config = Config::from_env()?;
@@ -24,7 +26,7 @@ fn main() -> Result<()> {
         config.model, config.workspace
     );
 
-    tokio::runtime::Builder::new_multi_thread()
+    Builder::new_multi_thread()
         .enable_all()
         .build()?
         .block_on(run(config))
@@ -45,7 +47,7 @@ async fn run(config: Config) -> Result<()> {
 
     // Set workspace directory
     if config.workspace != "." {
-        std::env::set_current_dir(&config.workspace)?;
+        env::set_current_dir(&config.workspace)?;
     }
 
     // Wait for session/message notification
@@ -74,19 +76,14 @@ async fn run(config: Config) -> Result<()> {
                     );
                 }
 
-                let loop_config = overloop::agentic_loop::LoopConfig {
+                let loop_config = LoopConfig {
                     max_iterations: config.max_iterations,
                     timeout: Duration::from_secs(config.timeout_minutes * 60),
                 };
 
-                if let Err(e) = overloop::agentic_loop::run(
-                    &mut acp,
-                    &llm,
-                    &mut registry,
-                    &mut messages,
-                    &loop_config,
-                )
-                .await
+                if let Err(e) =
+                    agentic_loop::run(&mut acp, &llm, &mut registry, &mut messages, &loop_config)
+                        .await
                 {
                     error!("Agentic loop error: {}", e);
                 }

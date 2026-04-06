@@ -30,8 +30,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uuid = { version = "1.23.0", features = ["v4"] }
 walkdir = "2.5.0"
 
-[lints.clippy]
-module_inception = "deny"
+[lints]
+workspace = true
 
 [dev-dependencies]
 serial_test = "3.4.0"

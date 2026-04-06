@@ -1,5 +1,7 @@
 use overloop::llm::{Content, LlmClient, Message, Role, StopReason};
 use serde_json::json;
+use std::collections::VecDeque;
+use std::sync::Mutex;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -134,7 +136,7 @@ data: [DONE]\n\n";
 
 /// A responder that cycles through a list of responses.
 struct CyclingResponder {
-    responses: std::sync::Mutex<std::collections::VecDeque<ResponseTemplate>>,
+    responses: Mutex<VecDeque<ResponseTemplate>>,
 }
 
 impl Respond for CyclingResponder {
@@ -161,7 +163,7 @@ async fn test_retry_on_429() {
     });
 
     let responder = CyclingResponder {
-        responses: std::sync::Mutex::new(
+        responses: Mutex::new(
             vec![
                 ResponseTemplate::new(429).set_body_string("rate limited"),
                 ResponseTemplate::new(200).set_body_json(&success_body),

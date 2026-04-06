@@ -2,12 +2,12 @@ use anyhow::Result;
 use serde_json::Value;
 use std::future::Future;
 
-use crate::llm::{CompletionResponse, Message, ToolDefinition, Usage};
+use crate::llm::{CompletionResponse, Message, StopReason, ToolDefinition, Usage};
 
 /// Streamed LLM response assembled from SSE deltas.
 pub struct StreamedResponse {
     pub message: Message,
-    pub finish_reason: Option<crate::llm::StopReason>,
+    pub finish_reason: Option<StopReason>,
     pub usage: Option<Usage>,
 }
 

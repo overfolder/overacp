@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::env;
 
 /// Runtime configuration parsed from environment variables.
 pub struct Config {
@@ -13,29 +14,29 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        let llm_api_key = std::env::var("LLM_API_KEY").context("LLM_API_KEY must be set")?;
+        let llm_api_key = env::var("LLM_API_KEY").context("LLM_API_KEY must be set")?;
 
         let llm_api_url =
-            std::env::var("LLM_API_URL").unwrap_or_else(|_| "https://openrouter.ai/api/v1".into());
+            env::var("LLM_API_URL").unwrap_or_else(|_| "https://openrouter.ai/api/v1".into());
 
-        let model = std::env::var("OVERFOLDER_MODEL")
+        let model = env::var("OVERFOLDER_MODEL")
             .unwrap_or_else(|_| "anthropic/claude-sonnet-4-20250514".into());
 
-        let workspace = std::env::var("OVERFOLDER_WORKSPACE").unwrap_or_else(|_| ".".into());
+        let workspace = env::var("OVERFOLDER_WORKSPACE").unwrap_or_else(|_| ".".into());
 
-        let mcp_servers: Vec<String> = std::env::var("MCP_SERVERS")
+        let mcp_servers: Vec<String> = env::var("MCP_SERVERS")
             .unwrap_or_default()
             .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
 
-        let max_iterations: usize = std::env::var("MAX_ITERATIONS")
+        let max_iterations: usize = env::var("MAX_ITERATIONS")
             .unwrap_or_else(|_| "100".into())
             .parse()
             .unwrap_or(100);
 
-        let timeout_minutes: u64 = std::env::var("TIMEOUT_MINUTES")
+        let timeout_minutes: u64 = env::var("TIMEOUT_MINUTES")
             .unwrap_or_else(|_| "60".into())
             .parse()
             .unwrap_or(60);
@@ -56,6 +57,7 @@ impl Config {
 mod tests {
     use super::*;
     use serial_test::serial;
+    use std::env;
 
     fn cleanup_env() {
         for key in [
@@ -67,7 +69,7 @@ mod tests {
             "MAX_ITERATIONS",
             "TIMEOUT_MINUTES",
         ] {
-            std::env::remove_var(key);
+            env::remove_var(key);
         }
     }
 
@@ -84,7 +86,7 @@ mod tests {
     #[serial]
     fn test_from_env_defaults() {
         cleanup_env();
-        std::env::set_var("LLM_API_KEY", "test");
+        env::set_var("LLM_API_KEY", "test");
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.llm_api_key, "test");
         assert_eq!(cfg.llm_api_url, "https://openrouter.ai/api/v1");
@@ -100,13 +102,13 @@ mod tests {
     #[serial]
     fn test_from_env_custom() {
         cleanup_env();
-        std::env::set_var("LLM_API_KEY", "key123");
-        std::env::set_var("LLM_API_URL", "http://localhost:8080");
-        std::env::set_var("OVERFOLDER_MODEL", "gpt-4");
-        std::env::set_var("OVERFOLDER_WORKSPACE", "/tmp/ws");
-        std::env::set_var("MCP_SERVERS", "http://a");
-        std::env::set_var("MAX_ITERATIONS", "50");
-        std::env::set_var("TIMEOUT_MINUTES", "30");
+        env::set_var("LLM_API_KEY", "key123");
+        env::set_var("LLM_API_URL", "http://localhost:8080");
+        env::set_var("OVERFOLDER_MODEL", "gpt-4");
+        env::set_var("OVERFOLDER_WORKSPACE", "/tmp/ws");
+        env::set_var("MCP_SERVERS", "http://a");
+        env::set_var("MAX_ITERATIONS", "50");
+        env::set_var("TIMEOUT_MINUTES", "30");
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.llm_api_key, "key123");
         assert_eq!(cfg.llm_api_url, "http://localhost:8080");
@@ -122,8 +124,8 @@ mod tests {
     #[serial]
     fn test_mcp_servers_parsing() {
         cleanup_env();
-        std::env::set_var("LLM_API_KEY", "test");
-        std::env::set_var("MCP_SERVERS", "http://a, http://b , ");
+        env::set_var("LLM_API_KEY", "test");
+        env::set_var("MCP_SERVERS", "http://a, http://b , ");
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.mcp_servers, vec!["http://a", "http://b"]);
         cleanup_env();

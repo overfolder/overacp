@@ -5,7 +5,8 @@ use serde_json::Value;
 use std::time::Duration;
 use tracing::{debug, warn};
 
-use crate::traits::StreamedResponse;
+use crate::traits::{LlmService, StreamedResponse};
+use tokio::time::sleep;
 
 use super::{
     CompletionResponse, Content, Delta, FunctionCall, Message, Role, StreamEvent, ToolCall,
@@ -80,7 +81,7 @@ impl LlmClient {
             if attempt > 0 {
                 let delay = Duration::from_millis(500 * 2u64.pow(attempt));
                 warn!("LLM retry attempt {}, waiting {:?}", attempt, delay);
-                tokio::time::sleep(delay).await;
+                sleep(delay).await;
             }
 
             match self
@@ -260,7 +261,7 @@ fn accumulate_tool_call(calls: &mut Vec<PartialToolCall>, delta: &super::ToolCal
     }
 }
 
-impl crate::traits::LlmService for LlmClient {
+impl LlmService for LlmClient {
     async fn stream_completion(
         &self,
         messages: &[Message],

@@ -1,11 +1,13 @@
 use overloop::mcp::McpClient;
 use serde_json::json;
+use std::collections::VecDeque;
+use std::sync::Mutex;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 /// A responder that returns different responses for initialize vs other methods.
 struct McpResponder {
-    responses: std::sync::Mutex<std::collections::VecDeque<ResponseTemplate>>,
+    responses: Mutex<VecDeque<ResponseTemplate>>,
 }
 
 impl Respond for McpResponder {
@@ -58,7 +60,7 @@ async fn test_list_tools() {
     }));
 
     let responder = McpResponder {
-        responses: std::sync::Mutex::new(vec![init_response(), tools_list_response].into()),
+        responses: Mutex::new(vec![init_response(), tools_list_response].into()),
     };
 
     Mock::given(method("POST"))
@@ -91,7 +93,7 @@ async fn test_call_tool_success() {
     }));
 
     let responder = McpResponder {
-        responses: std::sync::Mutex::new(vec![init_response(), tool_result_response].into()),
+        responses: Mutex::new(vec![init_response(), tool_result_response].into()),
     };
 
     // Initialize first, then call tool
@@ -127,7 +129,7 @@ async fn test_call_tool_error() {
     }));
 
     let responder = McpResponder {
-        responses: std::sync::Mutex::new(vec![init_response(), tool_error_response].into()),
+        responses: Mutex::new(vec![init_response(), tool_error_response].into()),
     };
 
     Mock::given(method("POST"))
@@ -162,7 +164,7 @@ async fn test_session_id() {
     }));
 
     let responder = McpResponder {
-        responses: std::sync::Mutex::new(vec![init_response_with_session(), tools_response].into()),
+        responses: Mutex::new(vec![init_response_with_session(), tools_response].into()),
     };
 
     Mock::given(method("POST"))

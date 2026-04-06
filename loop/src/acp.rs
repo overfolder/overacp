@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Stdin, Stdout, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::llm::Message;
@@ -55,22 +55,22 @@ pub struct InitializeResult {
 }
 
 /// ACP client communicating over JSON-RPC on any Read/Write stream.
-pub struct AcpClient<R: std::io::Read, W: Write> {
+pub struct AcpClient<R: Read, W: Write> {
     reader: BufReader<R>,
     writer: W,
 }
 
-impl AcpClient<std::io::Stdin, std::io::Stdout> {
+impl AcpClient<Stdin, Stdout> {
     /// Create an AcpClient wired to process stdin/stdout.
     pub fn stdio() -> Self {
         Self {
-            reader: BufReader::new(std::io::stdin()),
-            writer: std::io::stdout(),
+            reader: BufReader::new(io::stdin()),
+            writer: io::stdout(),
         }
     }
 }
 
-impl<R: std::io::Read, W: Write> AcpClient<R, W> {
+impl<R: Read, W: Write> AcpClient<R, W> {
     /// Create an AcpClient from arbitrary Read/Write streams.
     pub fn new(reader: R, writer: W) -> Self {
         Self {
@@ -192,7 +192,7 @@ impl<R: std::io::Read, W: Write> AcpClient<R, W> {
     }
 }
 
-impl<R: std::io::Read, W: Write> AcpService for AcpClient<R, W> {
+impl<R: Read, W: Write> AcpService for AcpClient<R, W> {
     fn stream_text_delta(&mut self, text: &str) -> Result<()> {
         self.stream_text_delta(text)
     }
