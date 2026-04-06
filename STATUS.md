@@ -6,15 +6,15 @@
 
 **0.1 — vendor `loop`** (in progress)
 
-The repo currently contains a single vendored crate, `overacp-loop`, copied
-from `overfolder/overloop`. Workspace wiring and rename are the only work
-items at this stage. No protocol, server, or agent crates yet.
+The repo currently contains a single vendored crate, `overloop`, copied
+from `overfolder/overloop`. Workspace wiring is the only structural work
+item at this stage. No protocol, server, or agent crates yet.
 
 ## Crates
 
 | Crate | State |
 |---|---|
-| `overacp-loop` | Vendored, builds. Reference agent. |
+| `overloop` | Vendored, builds. Reference agent. |
 | `overacp-protocol` | Not started. |
 | `overacp-agent` | Not started. |
 | `overacp-server` | Not started. |

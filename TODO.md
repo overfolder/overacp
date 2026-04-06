@@ -4,7 +4,6 @@ Tracks concrete next steps. High-level roadmap lives in SPEC.md.
 
 ## 0.1 — vendor `loop` (current)
 
-- [ ] Rename vendored crate package from `overloop` → `overacp-loop`.
 - [ ] Set up workspace `Cargo.toml` at repo root.
 - [ ] CI: fmt, clippy, test on stable.
 - [ ] Apache-2.0 LICENSE + NOTICE file at repo root.
@@ -28,7 +27,7 @@ Tracks concrete next steps. High-level roadmap lives in SPEC.md.
 - [ ] `AgentAdapter` trait so the supervised child can be any
       ACP-speaking harness.
 - [ ] Built-in adapters:
-  - [ ] `loop` — identity passthrough to `overacp-loop`.
+  - [ ] `loop` — identity passthrough to `overloop`.
   - [ ] `claude-code` — spawn `agentclientprotocol/claude-agent-acp` as a
         Node subprocess. Document Node version requirement.
   - [ ] `codex` — depend on `cola-io/codex-acp` (verify Apache-2.0 still
