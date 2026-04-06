@@ -137,11 +137,21 @@ traits.
   (`session/new`, `session/message`, ...) for surface compatibility, or pick
   our own and ship adapters? Leaning toward "borrow where it doesn't conflict,
   add what we need".
-- **Tool model.** Do we expose tools as MCP all the way down (server-side
-  MCP host that speaks to plugged-in MCP servers, agent gets a unified
-  `tools/list`/`tools/call`), or keep MCP optional and let `ToolHost` be a
-  trait that authors implement directly? Probably both — MCP as the default
-  adapter, raw trait as the escape hatch.
+- **Tool model.** `ToolHost` is the trait, MCP is the default adapter. The
+  controlplane runs MCP *clients* against operator-configured MCP servers and
+  re-exposes them through `ToolHost` as a unified `tools/list` / `tools/call`
+  surface over ACP — the agent never learns a tool came from MCP, and the
+  agent compute environment never touches the MCP server directly. This keeps
+  secrets, network egress, and credentials on the controlplane side: the
+  server mints short-lived per-session tokens and injects them into the MCP
+  client connection. Tool names are namespaced per backing server. Authors
+  who want to bypass MCP entirely can implement `ToolHost` directly as the
+  escape hatch.
+
+  Explicitly **not supported**: injecting MCP server configs down into the
+  child agent process so the harness runs its own MCP clients. That model
+  leaks credentials into the compute VM and bypasses the controlplane's
+  metering/auth hooks.
 - **Workspace sync.** Reference impl over GCS exists in Overfolder; should it
   ship as an optional crate (`overacp-workspace-gcs`) or stay product-side?
 - **Multi-agent.** Today one tunnel = one agent process. Multi-agent (a
