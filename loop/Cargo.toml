@@ -1,0 +1,42 @@
+[package]
+name = "overacp-loop"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal agentic loop — ACP over stdio, MCP, OpenAI-compatible LLM. Reference agent for the over/ACP framework."
+license = "Apache-2.0"
+repository = "https://github.com/overfolder/overacp"
+
+[lib]
+# Keep the lib name as `overloop` so existing `overloop::...` paths in
+# bin/tests don't need to change. The package is overacp-loop; the lib
+# is consumed via `use overloop::...`.
+name = "overloop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "overacp-loop"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.102"
+async-trait = "0.1.89"
+chrono = { version = "0.4.44", features = ["serde"] }
+dotenvy = "0.15.7"
+futures-util = "0.3.32"
+glob = "0.3.3"
+reqwest = { version = "0.13.2", features = ["json", "stream"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+tokio = { version = "1.50.0", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.23.0", features = ["v4"] }
+walkdir = "2.5.0"
+
+[lints.clippy]
+module_inception = "deny"
+
+[dev-dependencies]
+serial_test = "3.4.0"
+tempfile = "3.27.0"
+wiremock = "0.6.5"
