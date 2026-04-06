@@ -1,5 +1,6 @@
 use overloop::tools::ToolRegistry;
 use serde_json::json;
+use std::fs;
 use tempfile::TempDir;
 
 #[test]
@@ -35,7 +36,7 @@ async fn test_execute_unknown() {
 async fn test_execute_read() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test.txt");
-    std::fs::write(&path, "hello from registry\n").unwrap();
+    fs::write(&path, "hello from registry\n").unwrap();
 
     let mut registry = ToolRegistry::new();
     let result = registry

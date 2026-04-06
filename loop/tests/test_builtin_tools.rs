@@ -1,12 +1,13 @@
 use overloop::tools::{tool_exec, tool_glob, tool_grep, tool_read, tool_write};
 use serde_json::json;
+use std::fs;
 use tempfile::TempDir;
 
 #[tokio::test]
 async fn test_read_basic() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("hello.txt");
-    std::fs::write(&path, "line one\nline two\nline three\n").unwrap();
+    fs::write(&path, "line one\nline two\nline three\n").unwrap();
 
     let result = tool_read(json!({ "path": path.to_str().unwrap() })).await;
     let output = result.unwrap();
@@ -20,7 +21,7 @@ async fn test_read_offset_limit() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("lines.txt");
     let content: String = (1..=10).map(|i| format!("line {}\n", i)).collect();
-    std::fs::write(&path, &content).unwrap();
+    fs::write(&path, &content).unwrap();
 
     let result = tool_read(json!({
         "path": path.to_str().unwrap(),
@@ -53,7 +54,7 @@ async fn test_write_basic() {
     }))
     .await;
     assert!(result.is_ok());
-    let written = std::fs::read_to_string(&path).unwrap();
+    let written = fs::read_to_string(&path).unwrap();
     assert_eq!(written, "hello world");
 }
 
@@ -68,7 +69,7 @@ async fn test_write_creates_parents() {
     }))
     .await;
     assert!(result.is_ok());
-    let written = std::fs::read_to_string(&path).unwrap();
+    let written = fs::read_to_string(&path).unwrap();
     assert_eq!(written, "nested content");
 }
 
@@ -102,9 +103,9 @@ async fn test_exec_exit_code() {
 #[tokio::test]
 async fn test_glob_match() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("foo.rs"), "").unwrap();
-    std::fs::write(dir.path().join("bar.rs"), "").unwrap();
-    std::fs::write(dir.path().join("baz.txt"), "").unwrap();
+    fs::write(dir.path().join("foo.rs"), "").unwrap();
+    fs::write(dir.path().join("bar.rs"), "").unwrap();
+    fs::write(dir.path().join("baz.txt"), "").unwrap();
 
     let result = tool_glob(json!({
         "pattern": "*.rs",
@@ -120,7 +121,7 @@ async fn test_glob_match() {
 #[tokio::test]
 async fn test_glob_no_match() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("foo.rs"), "").unwrap();
+    fs::write(dir.path().join("foo.rs"), "").unwrap();
 
     let result = tool_glob(json!({
         "pattern": "*.xyz",
@@ -134,7 +135,7 @@ async fn test_glob_no_match() {
 #[tokio::test]
 async fn test_grep_match() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("data.txt"), "hello world\ngoodbye\n").unwrap();
+    fs::write(dir.path().join("data.txt"), "hello world\ngoodbye\n").unwrap();
 
     let result = tool_grep(json!({
         "pattern": "hello",
@@ -148,7 +149,7 @@ async fn test_grep_match() {
 #[tokio::test]
 async fn test_grep_no_match() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("data.txt"), "hello world\n").unwrap();
+    fs::write(dir.path().join("data.txt"), "hello world\n").unwrap();
 
     let result = tool_grep(json!({
         "pattern": "nonexistent",

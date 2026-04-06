@@ -39,7 +39,7 @@ The primitives:
 │  - ToolHost trait       │                   │           ▲             │
 │  - ComputeBackend trait │                   │           │             │
 └─────────────────────────┘                   │  ┌────────┴────────┐    │
-                                              │  │  overacp-loop    │   │
+                                              │  │  overloop        │   │
                                               │  │  (or any agent)  │   │
                                               │  │                  │   │
                                               │  │  - LLM client    │   │
@@ -69,11 +69,11 @@ implementations.
 | `overacp-protocol` | TODO | Wire types, JSON-RPC method names, JWT claims helpers, no I/O |
 | `overacp-server` | TODO (extracted from `overfolder/controlplane`) | WS hub, dispatcher, LLM proxy, traits + built-in adapters |
 | `overacp-agent` | TODO (extracted from `overfolder/overlet`) | WS client, child supervisor, stdio bridge |
-| **`overacp-loop`** | **here** (vendored from `overfolder/overloop`) | Reference agent: agentic loop + built-in tools + LLM client |
+| **`overloop`** | **here** (vendored from `overfolder/overloop`) | Reference agent: agentic loop + built-in tools + LLM client |
 | `overacp-tools-mcp` | TODO | Optional MCP host adapter so the server can speak MCP to backing tool servers |
 | `examples/local`, `examples/morph`, `examples/docker` | TODO | Reference compute backends |
 
-The current commit ships only `overacp-loop`. The protocol/server/agent
+The current commit ships only `overloop`. The protocol/server/agent
 crates are being extracted from the Overfolder monorepo.
 
 ## Non-goals (intentional)
@@ -115,8 +115,8 @@ traits.
 
 ## Roadmap
 
-1. **0.1 — vendor `loop`** *(this commit)* — copy the reference agent in,
-   rename to `overacp-loop`, set up the workspace.
+1. **0.1 — vendor `loop`** *(this commit)* — copy the reference agent in
+   as the `overloop` crate, set up the workspace.
 2. **0.2 — `overacp-protocol`** — extract the wire types from Overfolder's
    `controlplane/src/{acp,session}.rs`. Pure types, no I/O. The contract.
 3. **0.3 — `overacp-agent`** — lift `overfolder/overlet` here, depend on

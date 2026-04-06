@@ -2,7 +2,11 @@ use anyhow::Result;
 use serde_json::Value;
 use std::path::Path;
 use std::process::Stdio;
+use std::time::Duration;
+use tokio::fs;
 use tokio::process::Command;
+use tokio::task::spawn_blocking;
+use tokio::time::timeout;
 
 use super::ToolResult;
 
@@ -11,7 +15,7 @@ pub async fn tool_read(args: Value) -> ToolResult {
     let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
 
-    let content = tokio::fs::read_to_string(&path)
+    let content = fs::read_to_string(&path)
         .await
         .map_err(|e| format!("read {}: {}", path, e))?;
 
@@ -34,12 +38,12 @@ pub async fn tool_write(args: Value) -> ToolResult {
     let content = arg_str(&args, "content")?;
 
     if let Some(parent) = Path::new(&path).parent() {
-        tokio::fs::create_dir_all(parent)
+        fs::create_dir_all(parent)
             .await
             .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
     }
 
-    tokio::fs::write(&path, &content)
+    fs::write(&path, &content)
         .await
         .map_err(|e| format!("write {}: {}", path, e))?;
 
@@ -50,8 +54,8 @@ pub async fn tool_exec(args: Value) -> ToolResult {
     let command = arg_str(&args, "command")?;
     let timeout_secs = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(120);
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
+    let result = timeout(
+        Duration::from_secs(timeout_secs),
         Command::new("bash")
             .arg("-c")
             .arg(&command)
@@ -93,7 +97,7 @@ pub async fn tool_glob(args: Value) -> ToolResult {
     let pattern = pattern.clone();
     let path = path.to_string();
 
-    let result = tokio::task::spawn_blocking(move || {
+    let result = spawn_blocking(move || {
         let matcher =
             glob::Pattern::new(&pattern).map_err(|e| format!("invalid pattern: {}", e))?;
 
