@@ -18,6 +18,11 @@ use crate::error::ProtocolError;
 pub const DEFAULT_TOKEN_TTL_SECS: i64 = 3600;
 
 /// JWT claims carried in every over/ACP session token.
+///
+/// over/ACP intentionally has **no tier, plan, or entitlement claim**.
+/// over/ACP is OSS and does not dictate billing models; deployments
+/// that need per-user policy decisions should carry that state in
+/// their own database keyed on `user`, not in the token.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Claims {
     /// Agent identity (subject).
@@ -26,9 +31,6 @@ pub struct Claims {
     pub user: Uuid,
     /// Conversation ID this token is scoped to.
     pub conv: Uuid,
-    /// User tier (e.g. "free", "paid", "premium"). Free-form string;
-    /// the protocol does not assign meaning beyond round-tripping it.
-    pub tier: String,
     /// Expiration as a Unix timestamp (seconds since epoch).
     pub exp: i64,
     /// Issuer string. Must match what `validate_token` is told to
@@ -47,14 +49,12 @@ pub fn mint_token(
     agent_id: Uuid,
     user_id: Uuid,
     conversation_id: Uuid,
-    tier: &str,
 ) -> Result<String, ProtocolError> {
     let now = Utc::now().timestamp();
     let claims = Claims {
         sub: agent_id,
         user: user_id,
         conv: conversation_id,
-        tier: tier.to_string(),
         exp: now + ttl_secs,
         iss: issuer.to_string(),
     };

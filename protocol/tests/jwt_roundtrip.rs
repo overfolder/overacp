@@ -24,7 +24,6 @@ fn mint_and_validate_roundtrip() {
         agent_id,
         user_id,
         conv_id,
-        "paid",
     )
     .unwrap();
     let claims = validate_token(TEST_KEY, TEST_ISSUER, &token).unwrap();
@@ -32,7 +31,6 @@ fn mint_and_validate_roundtrip() {
     assert_eq!(claims.sub, agent_id);
     assert_eq!(claims.user, user_id);
     assert_eq!(claims.conv, conv_id);
-    assert_eq!(claims.tier, "paid");
     assert_eq!(claims.iss, TEST_ISSUER);
 }
 
@@ -45,7 +43,6 @@ fn wrong_key_rejected() {
         Uuid::new_v4(),
         Uuid::new_v4(),
         Uuid::new_v4(),
-        "free",
     )
     .unwrap();
     let result = validate_token("wrong-key", TEST_ISSUER, &token);
@@ -59,7 +56,6 @@ fn expired_token_rejected() {
         sub: Uuid::new_v4(),
         user: Uuid::new_v4(),
         conv: Uuid::new_v4(),
-        tier: "free".to_string(),
         exp: now - 100,
         iss: TEST_ISSUER.to_string(),
     };
@@ -81,7 +77,6 @@ fn wrong_issuer_rejected() {
         sub: Uuid::new_v4(),
         user: Uuid::new_v4(),
         conv: Uuid::new_v4(),
-        tier: "free".to_string(),
         exp: now + 3600,
         iss: "not-the-expected-issuer".to_string(),
     };
@@ -109,7 +104,6 @@ fn peek_claims_skips_validation() {
         Uuid::new_v4(),
         Uuid::new_v4(),
         conv_id,
-        "free",
     )
     .unwrap();
 

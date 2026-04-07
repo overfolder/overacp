@@ -5,7 +5,7 @@
 //! authenticate the WebSocket tunnel between the over/ACP server and
 //! the agent process.
 //!
-//! See `PROTOCOL.md` at the repository root for the full design doc.
+//! See `docs/design/protocol.md` for the full design doc.
 //!
 //! The crate is deliberately I/O-free. It depends only on `serde`,
 //! `serde_json`, `jsonwebtoken`, `uuid`, `chrono`, and `thiserror`.

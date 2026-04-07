@@ -9,32 +9,33 @@ Tracks concrete next steps. High-level roadmap lives in SPEC.md.
 - [x] Apache-2.0 LICENSE + NOTICE file at repo root.
 - [x] README pointing at SPEC.md.
 
-## 0.2 — `overacp-protocol` (current)
+## 0.2 — `overacp-protocol`
 
-- [ ] Extract wire types from `overfolder/controlplane/src/{acp,session}.rs`.
-- [ ] Pure types, no I/O, no tokio.
-- [ ] Decide method naming: borrow Zed/Anthropic ACP names where they fit,
+- [x] Extract wire types from `overfolder/controlplane/src/{acp,session}.rs`.
+- [x] Pure types, no I/O, no tokio.
+- [x] Decide method naming: borrow Zed/Anthropic ACP names where they fit,
       add controlplane-only methods (quota, persistence, compute) under our
-      own namespace. Document the mapping.
-- [ ] JWT claims helpers.
-- [ ] Round-trip tests against captured fixtures.
+      own namespace. Document the mapping. *(see `docs/design/protocol.md`)*
+- [x] JWT claims helpers.
+- [x] Round-trip tests against captured fixtures.
 
 ## 0.3 — `overacp-agent`
 
-- [ ] Lift `overfolder/overlet` into the workspace.
-- [ ] WS client + reconnect/backoff.
-- [ ] Child-process supervisor + stdio bridge.
-- [ ] `AgentAdapter` trait so the supervised child can be any
+- [x] Lift `overfolder/overlet` into the workspace.
+- [x] WS client + reconnect/backoff.
+- [x] Child-process supervisor + stdio bridge.
+- [x] `AgentAdapter` trait so the supervised child can be any
       ACP-speaking harness.
-- [ ] Built-in adapters:
-  - [ ] `loop` — identity passthrough to `overloop`.
+- [x] Built-in adapters:
+  - [x] `loop` — identity passthrough to `overloop`.
   - [ ] `claude-code` — spawn `agentclientprotocol/claude-agent-acp` as a
-        Node subprocess. Document Node version requirement.
+        Node subprocess. Document Node version requirement. *(deferred)*
   - [ ] `codex` — depend on `cola-io/codex-acp` (verify Apache-2.0 still
         current) OR vendor `zed-industries/codex-acp` after LICENSE check.
-- [ ] Workspace sync abstracted behind a trait (optional impl).
+        *(deferred)*
+- [x] Workspace sync abstracted behind a trait (optional impl).
 
-## 0.4 — `overacp-server`
+## 0.4 — `overacp-server` (current)
 
 - [ ] Lift generic parts of `overfolder/controlplane`: WS hub, dispatcher,
       LLM proxy, SSE dev surface.
@@ -69,4 +70,5 @@ Tracks concrete next steps. High-level roadmap lives in SPEC.md.
 - [ ] Decide whether `overacp-workspace-gcs` ships here or stays in Overfolder.
 - [ ] Worked example for multi-agent (parent agent spawns sub-agent on a new
       VM via a `ComputeBackend` tool call, not a special protocol method).
-- [ ] Document the protocol-naming mapping table once 0.2 lands.
+- [x] Document the protocol-naming mapping table once 0.2 lands.
+      *(landed in `docs/design/protocol.md`)*
