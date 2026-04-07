@@ -2,14 +2,14 @@
 
 Tracks concrete next steps. High-level roadmap lives in SPEC.md.
 
-## 0.1 — vendor `loop` (current)
+## 0.1 — vendor `loop`
 
-- [ ] Set up workspace `Cargo.toml` at repo root.
-- [ ] CI: fmt, clippy, test on stable.
-- [ ] Apache-2.0 LICENSE + NOTICE file at repo root.
-- [ ] README pointing at SPEC.md.
+- [x] Set up workspace `Cargo.toml` at repo root.
+- [x] CI: fmt, clippy, test on stable.
+- [x] Apache-2.0 LICENSE + NOTICE file at repo root.
+- [x] README pointing at SPEC.md.
 
-## 0.2 — `overacp-protocol`
+## 0.2 — `overacp-protocol` (current)
 
 - [ ] Extract wire types from `overfolder/controlplane/src/{acp,session}.rs`.
 - [ ] Pure types, no I/O, no tokio.
