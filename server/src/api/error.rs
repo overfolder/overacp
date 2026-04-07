@@ -7,10 +7,11 @@ use axum::Json;
 use serde_json::json;
 use thiserror::Error;
 
-use overacp_compute_core::ProviderError;
+use overacp_compute_core::{ConfigError, ProviderError};
 
 use crate::api::dto::ValidationResult;
 use crate::api::pool_config::PoolConfigParseError;
+use crate::auth::AuthError;
 use crate::store::StoreError;
 
 #[derive(Debug, Error)]
@@ -31,6 +32,10 @@ pub enum ApiError {
     Store(#[from] StoreError),
     #[error(transparent)]
     Provider(#[from] ProviderError),
+    #[error("config resolution failed: {0}")]
+    Config(#[from] ConfigError),
+    #[error("auth: {0}")]
+    Auth(#[from] AuthError),
 }
 
 impl IntoResponse for ApiError {
@@ -80,6 +85,16 @@ impl IntoResponse for ApiError {
             Self::Store(StoreError::Backend(e)) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": "backend", "message": e.to_string() })),
+            )
+                .into_response(),
+            Self::Config(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "config", "message": e.to_string() })),
+            )
+                .into_response(),
+            Self::Auth(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "auth", "message": e.to_string() })),
             )
                 .into_response(),
         }

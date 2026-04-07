@@ -13,6 +13,10 @@
 //! match the fixtures in `docs/design/controlplane.md` § 3.2.1.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use overacp_compute_core::providers::local::LocalProvider;
+use overacp_compute_core::{ComputeProvider, ProviderError, ResolvedConfig};
 
 use crate::api::dto::{ProviderInfo, ValidationFieldError};
 use crate::api::pool_config::{is_secret_ref, PoolConfig};
@@ -27,6 +31,15 @@ pub trait ProviderPlugin: Send + Sync {
     /// Validate a parsed [`PoolConfig`]. Pure: no I/O, no secret
     /// resolution. Returns the empty vec for "valid".
     fn validate(&self, config: &PoolConfig) -> Vec<ValidationFieldError>;
+
+    /// Construct a live `ComputeProvider` from a resolved pool
+    /// config. Called once per pool the first time the controlplane
+    /// needs a runtime (e.g. on first agent create); the result is
+    /// cached on `AppState::pool_runtimes`.
+    fn instantiate(
+        &self,
+        config: ResolvedConfig,
+    ) -> Result<Arc<dyn ComputeProvider>, ProviderError>;
 }
 
 /// In-memory registry of provider plugins, populated at startup.
@@ -96,6 +109,15 @@ impl ProviderPlugin for LocalProcessPlugin {
         }
         errors
     }
+
+    fn instantiate(
+        &self,
+        config: ResolvedConfig,
+    ) -> Result<Arc<dyn ComputeProvider>, ProviderError> {
+        Ok(Arc::new(<LocalProvider as ComputeProvider>::from_config(
+            config,
+        )?))
+    }
 }
 
 /// Stub plugin for `overacp-compute-morph`. Validates the keys
@@ -127,6 +149,7 @@ impl ProviderPlugin for MorphPlugin {
                 )],
             });
         }
+        // morph stays a stub here — see `instantiate` below.
         require_present(config, "morph.api_key", &mut errors);
         require_present(config, "default.image", &mut errors);
         for key in [
@@ -146,6 +169,15 @@ impl ProviderPlugin for MorphPlugin {
             }
         }
         errors
+    }
+
+    fn instantiate(
+        &self,
+        _config: ResolvedConfig,
+    ) -> Result<Arc<dyn ComputeProvider>, ProviderError> {
+        Err(ProviderError::Backend(
+            "morph provider is not compiled into this server build".into(),
+        ))
     }
 }
 

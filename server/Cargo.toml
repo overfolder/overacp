@@ -38,3 +38,4 @@ workspace = true
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = "3"

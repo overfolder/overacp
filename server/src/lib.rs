@@ -5,7 +5,7 @@ pub mod state;
 pub mod store;
 pub mod tunnel;
 
-pub use api::{compute_nodes_router, compute_router};
+pub use api::{agents_router, compute_nodes_router, compute_router};
 pub use auth::{AuthError, Authenticator, Claims, StaticJwtAuthenticator};
 pub use routes::router;
 pub use state::AppState;

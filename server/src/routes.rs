@@ -12,7 +12,7 @@ use serde::Deserialize;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::api::{compute_nodes_router, compute_router};
+use crate::api::{agents_router, compute_nodes_router, compute_router};
 use crate::state::AppState;
 use crate::tunnel::run::{run_tunnel, TunnelContext};
 
@@ -22,6 +22,7 @@ pub fn router(state: AppState) -> Router {
         .route("/tunnel/:session_id", get(tunnel_upgrade))
         .merge(compute_router())
         .merge(compute_nodes_router())
+        .merge(agents_router())
         .with_state(state)
 }
 

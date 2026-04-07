@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use overacp_compute_core::ComputeProvider;
+use overacp_compute_core::{ComputeProvider, ConfigResolver};
 
 use crate::api::ProviderRegistry;
 use crate::auth::Authenticator;
@@ -21,6 +21,10 @@ pub struct AppState {
     pub store: Arc<dyn SessionStore>,
     pub providers: Arc<ProviderRegistry>,
     pub pool_runtimes: Arc<PoolRuntimes>,
+    /// Resolver for `${...}` secret references in pool configs.
+    /// One process-lifetime instance shared across pools so the
+    /// `env`/`file`/... providers initialise just once.
+    pub resolver: Arc<ConfigResolver>,
     pub authenticator: Arc<dyn Authenticator>,
     pub sessions: SessionManager,
     pub stream_broker: Arc<StreamBroker>,
@@ -36,6 +40,7 @@ impl AppState {
             store,
             providers,
             pool_runtimes: Arc::new(RwLock::new(HashMap::new())),
+            resolver: Arc::new(ConfigResolver::with_defaults()),
             authenticator,
             sessions: new_session_manager(),
             stream_broker: StreamBroker::new(),

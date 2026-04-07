@@ -1,5 +1,5 @@
 {
-  "name": "morph-prod",
+  "name": "morph-test",
   "config": {
     "provider.class": "morph",
     "morph.api_key": "${env:MORPH_API_KEY}",

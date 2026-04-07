@@ -200,7 +200,7 @@ async fn create_get_round_trips_secret_refs_unchanged() {
         String::from_utf8_lossy(&body)
     );
     let created: PoolView = parse(&body);
-    assert_eq!(created.name, "morph-prod");
+    assert_eq!(created.name, "morph-test");
     assert_eq!(created.provider_type, "morph");
     assert_eq!(created.status, PoolStatus::Active);
     assert_eq!(
@@ -210,13 +210,13 @@ async fn create_get_round_trips_secret_refs_unchanged() {
     );
 
     // GET full pool.
-    let (status, body) = send(&app, "GET", "/compute/pools/morph-prod", None).await;
+    let (status, body) = send(&app, "GET", "/compute/pools/morph-test", None).await;
     assert_eq!(status, StatusCode::OK);
     let got: PoolView = parse(&body);
     assert_eq!(got.config, created.config);
 
     // GET .../config — same shape, secret refs preserved verbatim.
-    let (status, body) = send(&app, "GET", "/compute/pools/morph-prod/config", None).await;
+    let (status, body) = send(&app, "GET", "/compute/pools/morph-test/config", None).await;
     assert_eq!(status, StatusCode::OK);
     let cfg: serde_json::Value = parse(&body);
     let echoed = cfg.get("config").unwrap();
@@ -238,7 +238,7 @@ async fn list_summaries_include_provider_type() {
     assert_eq!(status, StatusCode::OK);
     let list: Vec<PoolSummary> = parse(&body);
     assert_eq!(list.len(), 1);
-    assert_eq!(list[0].name, "morph-prod");
+    assert_eq!(list[0].name, "morph-test");
     assert_eq!(list[0].provider_type, "morph");
 }
 
@@ -294,7 +294,7 @@ async fn put_config_replaces_and_round_trips() {
     let (status, body) = send(
         &app,
         "PUT",
-        "/compute/pools/morph-prod/config",
+        "/compute/pools/morph-test/config",
         Some(&new_cfg),
     )
     .await;
@@ -324,7 +324,7 @@ async fn put_config_rejects_provider_class_change() {
         "config": { "provider.class": "local-process" }
     })
     .to_string();
-    let (status, _) = send(&app, "PUT", "/compute/pools/morph-prod/config", Some(&body)).await;
+    let (status, _) = send(&app, "PUT", "/compute/pools/morph-test/config", Some(&body)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -333,18 +333,18 @@ async fn pause_resume_updates_status() {
     let app = app();
     send(&app, "POST", "/compute/pools", Some(FIXTURE_CREATE)).await;
 
-    let (status, body) = send(&app, "POST", "/compute/pools/morph-prod/pause", Some("{}")).await;
+    let (status, body) = send(&app, "POST", "/compute/pools/morph-test/pause", Some("{}")).await;
     assert_eq!(status, StatusCode::OK);
     let pool: PoolView = parse(&body);
     assert_eq!(pool.status, PoolStatus::Paused);
 
-    let (status, body) = send(&app, "GET", "/compute/pools/morph-prod/status", None).await;
+    let (status, body) = send(&app, "GET", "/compute/pools/morph-test/status", None).await;
     assert_eq!(status, StatusCode::OK);
     let s: PoolStatusResponse = parse(&body);
     assert_eq!(s.state, PoolStatus::Paused);
     assert_eq!(s.provider_type, "morph");
 
-    let (status, body) = send(&app, "POST", "/compute/pools/morph-prod/resume", Some("{}")).await;
+    let (status, body) = send(&app, "POST", "/compute/pools/morph-test/resume", Some("{}")).await;
     assert_eq!(status, StatusCode::OK);
     let pool: PoolView = parse(&body);
     assert_eq!(pool.status, PoolStatus::Active);
@@ -355,9 +355,9 @@ async fn delete_pool_removes_it() {
     let app = app();
     send(&app, "POST", "/compute/pools", Some(FIXTURE_CREATE)).await;
 
-    let (status, _) = send(&app, "DELETE", "/compute/pools/morph-prod", None).await;
+    let (status, _) = send(&app, "DELETE", "/compute/pools/morph-test", None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    let (status, _) = send(&app, "GET", "/compute/pools/morph-prod", None).await;
+    let (status, _) = send(&app, "GET", "/compute/pools/morph-test", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }

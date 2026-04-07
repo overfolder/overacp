@@ -9,7 +9,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::store::PoolStatus;
+use uuid::Uuid;
+
+use crate::store::{AgentStatus, PoolStatus};
 
 /// `GET /compute/providers/{type}` and the entries in the list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,4 +87,62 @@ pub struct PoolStatusResponse {
     pub name: String,
     pub provider_type: String,
     pub state: PoolStatus,
+}
+
+// ── § 3.4 — agents ──────────────────────────────────────────────
+
+/// `POST /agents` request body.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateAgentRequest {
+    pub pool: String,
+    pub user: Uuid,
+    #[serde(default)]
+    pub image: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+}
+
+/// `GET /agents?user=...` query.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ListAgentsQuery {
+    #[serde(default)]
+    pub user: Option<String>,
+}
+
+/// `compute = { provider_type, pool, node_id }` block on agent
+/// describe responses (design doc § 3.4.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComputeRef {
+    pub provider_type: String,
+    pub pool: String,
+    pub node_id: String,
+}
+
+/// `GET /agents/{id}` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentView {
+    pub id: String,
+    pub user: Uuid,
+    pub conversation_id: Uuid,
+    pub compute: ComputeRef,
+    pub image: String,
+    pub status: AgentStatus,
+    pub created_at: DateTime<Utc>,
+    pub metadata: Value,
+}
+
+/// `POST /agents` response — agent record plus the freshly minted
+/// JWT scoped to its conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateAgentResponse {
+    #[serde(flatten)]
+    pub agent: AgentView,
+    pub jwt: String,
+}
+
+/// `GET /agents/{id}/status` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentStatusResponse {
+    pub id: String,
+    pub status: AgentStatus,
 }

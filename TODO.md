@@ -122,9 +122,16 @@ listed in full in `docs/design/controlplane.md` § 3.
       `DELETE /compute/pools/{pool}/nodes/{id}`,
       `POST /compute/pools/{pool}/nodes/{id}/exec`,
       `GET /compute/pools/{pool}/nodes/{id}/logs` (SSE).
-- [ ] `GET /agents`, `POST /agents`, `GET /agents/{id}`,
+- [x] `GET /agents`, `POST /agents`, `GET /agents/{id}`,
       `DELETE /agents/{id}`, `GET /agents/{id}/status`. Describe
       response includes `compute = { provider_type, pool, node_id }`.
+      Pool runtimes are instantiated lazily on first agent create
+      via `ProviderPlugin::instantiate`. JWTs are minted via
+      `Authenticator::issue`. Follow-up: gate the whole REST tree
+      behind a bearer-token middleware (today none of the REST
+      endpoints are authenticated; only the `/tunnel/{id}` upgrade
+      validates the JWT). Follow-up: tighten `store::Agent::user`
+      from `String` to `Uuid`.
 - [ ] REST adapters over the wire protocol:
       `POST /agents/{id}/messages` (enqueues + emits `session/message`),
       `GET /agents/{id}/messages?since=...`,
