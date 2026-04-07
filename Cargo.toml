@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "loop",
+    "protocol",
+    "agent",
 ]
 
 [workspace.package]
