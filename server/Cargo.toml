@@ -13,8 +13,8 @@ name = "overacp-server"
 path = "src/main.rs"
 
 [dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net"] }
-axum = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net", "time"] }
+axum = { workspace = true, features = ["ws", "query"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
@@ -26,6 +26,10 @@ tracing-subscriber = { workspace = true }
 overacp-compute-core = { path = "../compute" }
 futures = "0.3"
 bytes = "1"
+futures-util = { workspace = true }
+dashmap = { workspace = true }
+jsonwebtoken = { workspace = true }
+dotenvy = { workspace = true }
 
 [lints]
 workspace = true

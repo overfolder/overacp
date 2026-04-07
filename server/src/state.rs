@@ -4,7 +4,10 @@ use std::sync::{Arc, RwLock};
 use overacp_compute_core::ComputeProvider;
 
 use crate::api::ProviderRegistry;
+use crate::auth::Authenticator;
 use crate::store::SessionStore;
+use crate::tunnel::broker::StreamBroker;
+use crate::tunnel::session_manager::{new_session_manager, SessionManager};
 
 /// Pool name → live `ComputeProvider` instance.
 ///
@@ -18,14 +21,24 @@ pub struct AppState {
     pub store: Arc<dyn SessionStore>,
     pub providers: Arc<ProviderRegistry>,
     pub pool_runtimes: Arc<PoolRuntimes>,
+    pub authenticator: Arc<dyn Authenticator>,
+    pub sessions: SessionManager,
+    pub stream_broker: Arc<StreamBroker>,
 }
 
 impl AppState {
-    pub fn new(store: Arc<dyn SessionStore>, providers: Arc<ProviderRegistry>) -> Self {
+    pub fn new(
+        store: Arc<dyn SessionStore>,
+        providers: Arc<ProviderRegistry>,
+        authenticator: Arc<dyn Authenticator>,
+    ) -> Self {
         Self {
             store,
             providers,
             pool_runtimes: Arc::new(RwLock::new(HashMap::new())),
+            authenticator,
+            sessions: new_session_manager(),
+            stream_broker: StreamBroker::new(),
         }
     }
 

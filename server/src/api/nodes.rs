@@ -115,12 +115,17 @@ mod tests {
 
     use super::*;
     use crate::api::default_registry;
+    use crate::auth::StaticJwtAuthenticator;
     use crate::state::AppState;
     use crate::store::InMemoryStore;
 
     fn test_state() -> (AppState, Arc<LocalProvider>) {
         let store = Arc::new(InMemoryStore::new());
-        let state = AppState::new(store, Arc::new(default_registry()));
+        let state = AppState::new(
+            store,
+            Arc::new(default_registry()),
+            Arc::new(StaticJwtAuthenticator::new("test", "overacp")),
+        );
         // Use `/bin/sleep` so the spawned child stays alive for the
         // duration of the test without producing output we'd need to
         // synchronize against.
@@ -187,7 +192,11 @@ mod tests {
         // spawned node is harmless and exec dispatches a real
         // command on the host.
         let store = Arc::new(InMemoryStore::new());
-        let state = AppState::new(store, Arc::new(default_registry()));
+        let state = AppState::new(
+            store,
+            Arc::new(default_registry()),
+            Arc::new(StaticJwtAuthenticator::new("test", "overacp")),
+        );
         let provider = Arc::new(LocalProvider::new(
             "/bin/echo",
             env::temp_dir().join("overacp-nodes-test-exec"),

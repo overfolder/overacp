@@ -12,7 +12,7 @@ use overacp_server::api::{
     default_registry, PoolStatusResponse, PoolSummary, PoolView, ProviderInfo, ProvidersList,
     ValidationResult,
 };
-use overacp_server::{compute_router, AppState, InMemoryStore, PoolStatus};
+use overacp_server::{compute_router, AppState, InMemoryStore, PoolStatus, StaticJwtAuthenticator};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -21,7 +21,11 @@ const FIXTURE_CREATE: &str = include_str!("fixtures/morph_pool_create.json");
 const FIXTURE_VALIDATE: &str = include_str!("fixtures/morph_validate.json");
 
 fn app() -> Router {
-    let state = AppState::new(Arc::new(InMemoryStore::new()), Arc::new(default_registry()));
+    let state = AppState::new(
+        Arc::new(InMemoryStore::new()),
+        Arc::new(default_registry()),
+        Arc::new(StaticJwtAuthenticator::new("test-key", "overacp")),
+    );
     compute_router().with_state(state)
 }
 
