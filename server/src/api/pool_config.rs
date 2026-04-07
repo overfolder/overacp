@@ -62,7 +62,7 @@ impl PoolConfig {
         for (k, v) in object {
             let s = match v {
                 Value::String(s) => s.clone(),
-                Value::Null => continue,
+                Value::Null => return Err(non_string(k, "null")),
                 Value::Bool(_) => return Err(non_string(k, "bool")),
                 Value::Number(_) => return Err(non_string(k, "number")),
                 Value::Array(_) => return Err(non_string(k, "array")),
@@ -137,6 +137,17 @@ mod tests {
         let cfg = PoolConfig::parse(&v).unwrap();
         assert_eq!(cfg.provider_class(), "morph");
         assert_eq!(cfg.get("k"), Some("v"));
+    }
+
+    #[test]
+    fn rejects_null_values() {
+        // Silently dropping nulls would mask user mistakes like
+        // `{"morph.api_key": null}` — they should fail loudly.
+        let v = json!({ "provider.class": "morph", "morph.api_key": null });
+        assert!(matches!(
+            PoolConfig::parse(&v),
+            Err(PoolConfigParseError::NonStringValue { .. })
+        ));
     }
 
     #[test]
