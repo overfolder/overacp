@@ -125,11 +125,12 @@ listed in full in `docs/design/controlplane.md` § 3.
 - [ ] `GET /agents`, `POST /agents`, `GET /agents/{id}`,
       `DELETE /agents/{id}`, `GET /agents/{id}/status`. Describe
       response includes `compute = { provider_type, pool, node_id }`.
-- [ ] REST adapters over the wire protocol:
+- [x] REST adapters over the wire protocol:
       `POST /agents/{id}/messages` (enqueues + emits `session/message`),
       `GET /agents/{id}/messages?since=...`,
       `GET /agents/{id}/stream` (SSE fan-out of `stream/*`),
-      `POST /agents/{id}/cancel`.
+      `POST /agents/{id}/cancel`. Agent creation (§ 3.4) still
+      unlanded, so these currently require a pre-seeded agent row.
 
 ### Tunnel + LLM proxy
 

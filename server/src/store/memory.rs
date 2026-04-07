@@ -87,9 +87,12 @@ impl SessionStore for InMemoryStore {
             None => all.clone(),
             Some(cursor) => {
                 let pos = all.iter().position(|m| m.id == cursor);
+                // Unknown cursor → empty slice, not a flood. A stale
+                // `since` from a dropped client must not replay the
+                // entire history.
                 match pos {
                     Some(i) => all[i + 1..].to_vec(),
-                    None => all.clone(),
+                    None => Vec::new(),
                 }
             }
         };
@@ -301,5 +304,13 @@ mod tests {
         let after = s.list_messages(conv.id, Some(m1.id)).await.unwrap();
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].role, "assistant");
+
+        // Unknown cursor returns empty, not everything. Prevents a
+        // stale client from re-downloading the full history.
+        let bogus = s
+            .list_messages(conv.id, Some(Uuid::new_v4()))
+            .await
+            .unwrap();
+        assert!(bogus.is_empty());
     }
 }

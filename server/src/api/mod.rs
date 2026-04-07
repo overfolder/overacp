@@ -13,6 +13,7 @@
 //! - [`error`]       — `ApiError` + axum `IntoResponse` mapping.
 //! - [`routes`]      — handlers and the `Router` constructor.
 
+pub mod agents;
 pub mod dto;
 pub mod error;
 pub mod nodes;
@@ -20,6 +21,7 @@ pub mod pool_config;
 pub mod providers;
 pub mod routes;
 
+pub use agents::router as agents_router;
 pub use dto::{
     CreatePoolRequest, PoolConfigBody, PoolStatusResponse, PoolSummary, PoolView, ProviderInfo,
     ProvidersList, ValidationFieldError, ValidationResult,
