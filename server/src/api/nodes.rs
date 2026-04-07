@@ -32,10 +32,7 @@ pub fn router() -> Router<AppState> {
             "/compute/pools/:pool/nodes/:node_id",
             get(describe_node).delete(delete_node),
         )
-        .route(
-            "/compute/pools/:pool/nodes/:node_id/exec",
-            post(exec_node),
-        )
+        .route("/compute/pools/:pool/nodes/:node_id/exec", post(exec_node))
         .route(
             "/compute/pools/:pool/nodes/:node_id/logs",
             get(stream_node_logs),

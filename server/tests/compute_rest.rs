@@ -324,13 +324,7 @@ async fn put_config_rejects_provider_class_change() {
         "config": { "provider.class": "local-process" }
     })
     .to_string();
-    let (status, _) = send(
-        &app,
-        "PUT",
-        "/compute/pools/morph-prod/config",
-        Some(&body),
-    )
-    .await;
+    let (status, _) = send(&app, "PUT", "/compute/pools/morph-prod/config", Some(&body)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -339,13 +333,7 @@ async fn pause_resume_updates_status() {
     let app = app();
     send(&app, "POST", "/compute/pools", Some(FIXTURE_CREATE)).await;
 
-    let (status, body) = send(
-        &app,
-        "POST",
-        "/compute/pools/morph-prod/pause",
-        Some("{}"),
-    )
-    .await;
+    let (status, body) = send(&app, "POST", "/compute/pools/morph-prod/pause", Some("{}")).await;
     assert_eq!(status, StatusCode::OK);
     let pool: PoolView = parse(&body);
     assert_eq!(pool.status, PoolStatus::Paused);
@@ -356,13 +344,7 @@ async fn pause_resume_updates_status() {
     assert_eq!(s.state, PoolStatus::Paused);
     assert_eq!(s.provider_type, "morph");
 
-    let (status, body) = send(
-        &app,
-        "POST",
-        "/compute/pools/morph-prod/resume",
-        Some("{}"),
-    )
-    .await;
+    let (status, body) = send(&app, "POST", "/compute/pools/morph-prod/resume", Some("{}")).await;
     assert_eq!(status, StatusCode::OK);
     let pool: PoolView = parse(&body);
     assert_eq!(pool.status, PoolStatus::Active);
