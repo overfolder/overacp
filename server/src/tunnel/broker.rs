@@ -2,7 +2,7 @@
 //!
 //! The REST surface from `docs/design/controlplane.md` § 3.5 will
 //! consume this via `subscribe(session_id)` to feed
-//! `GET /api/v1/agents/{id}/stream` SSE clients. For now this lives
+//! `GET /agents/{id}/stream` SSE clients. For now this lives
 //! in process; multi-node deployments will swap in a Valkey-backed
 //! impl later.
 

@@ -150,8 +150,8 @@ prep, everything after it is filling in providers and demos.
 6. **0.5 — production providers + demo** —
    `overacp-compute-docker`, `overacp-compute-morph`,
    `overacp-workspace-gcs`, `overacp-workspace-s3`. End-to-end demo:
-   `cargo run`, then `curl POST /api/v1/compute/pools`, then
-   `POST /api/v1/agents`, then `POST /api/v1/agents/{id}/messages`.
+   `cargo run`, then `curl POST /compute/pools`, then
+   `POST /agents`, then `POST /agents/{id}/messages`.
 7. **0.6 — `overacp-tools-mcp` + Overfolder cutover** — controlplane
    ships its MCP `ToolHost` adapter; Overfolder's `controlplane`
    shrinks to the Postgres `SessionStore`, the Telegram channel, and

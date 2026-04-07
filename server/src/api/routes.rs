@@ -1,4 +1,4 @@
-//! axum routes for `/api/v1/compute/{providers,pools}`.
+//! axum routes for `/compute/{providers,pools}`.
 //!
 //! Handlers parse the wire body into typed values up front
 //! ([`PoolConfig`]) and from then on operate on those types — no
@@ -33,28 +33,22 @@ use crate::store::{ComputePool, PoolStatus};
 pub fn router() -> Router<AppState> {
     Router::new()
         // § 3.1 — providers
-        .route("/api/v1/compute/providers", get(list_providers))
+        .route("/compute/providers", get(list_providers))
+        .route("/compute/providers/:provider_type", get(get_provider))
         .route(
-            "/api/v1/compute/providers/:provider_type",
-            get(get_provider),
-        )
-        .route(
-            "/api/v1/compute/providers/:provider_type/config/validate",
+            "/compute/providers/:provider_type/config/validate",
             post(validate_provider_config),
         )
         // § 3.2 — pools
-        .route("/api/v1/compute/pools", get(list_pools).post(create_pool))
+        .route("/compute/pools", get(list_pools).post(create_pool))
+        .route("/compute/pools/:name", get(get_pool).delete(delete_pool))
         .route(
-            "/api/v1/compute/pools/:name",
-            get(get_pool).delete(delete_pool),
-        )
-        .route(
-            "/api/v1/compute/pools/:name/config",
+            "/compute/pools/:name/config",
             get(get_pool_config).put(replace_pool_config),
         )
-        .route("/api/v1/compute/pools/:name/status", get(get_pool_status))
-        .route("/api/v1/compute/pools/:name/pause", post(pause_pool))
-        .route("/api/v1/compute/pools/:name/resume", post(resume_pool))
+        .route("/compute/pools/:name/status", get(get_pool_status))
+        .route("/compute/pools/:name/pause", post(pause_pool))
+        .route("/compute/pools/:name/resume", post(resume_pool))
 }
 
 // ── § 3.1 — providers ───────────────────────────────────────────

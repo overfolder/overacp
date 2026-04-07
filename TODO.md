@@ -102,10 +102,11 @@ Full design in
 - [ ] `ProviderRegistry` populated at startup. Compile-time feature
       flags for which providers to include.
 
-### REST API surface (`/api/v1`)
+### REST API surface
 
-Modeled on Kafka Connect's connector API. Endpoints listed in full
-in `docs/design/controlplane.md` § 3.
+Served at the root — no `/api/v{n}` prefix; breaking changes ride
+software semver. Modeled on Kafka Connect's connector API. Endpoints
+listed in full in `docs/design/controlplane.md` § 3.
 
 - [ ] `GET /compute/providers`,
       `GET /compute/providers/{type}`,
@@ -161,8 +162,8 @@ in `docs/design/controlplane.md` § 3.
       `OVERACP_WORKSPACE_SYNC` env var or the controlplane-supplied
       descriptor.
 - [ ] End-to-end demo: clone repo, `cargo run`, then
-      `curl POST /api/v1/compute/pools` (local), then
-      `POST /api/v1/agents`, then `POST /api/v1/agents/{id}/messages`,
+      `curl POST /compute/pools` (local), then
+      `POST /agents`, then `POST /agents/{id}/messages`,
       observe the SSE stream.
 
 ## 0.6 — `overacp-tools-mcp` + Overfolder cutover

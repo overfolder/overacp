@@ -72,7 +72,10 @@ Agent            a logical conversation pinned to one ComputeNode
 
 ## 3. REST API
 
-All endpoints live under `/api/v1`. Authentication is via
+All endpoints are served at the root (no `/api/v{n}` prefix). Stability
+comes from software semver, not URL versioning — breaking REST changes
+ride a major release of `overacp-server` and operators stay on the
+prior version if they need the old shape. Authentication is via
 `Authorization: Bearer <jwt>` (the same JWT format as the WebSocket
 tunnel — see [`protocol.md`](./protocol.md) § 2). Admin endpoints
 require an additional scope claim (`admin: true` or similar — the
@@ -84,9 +87,9 @@ Lists provider types compiled into the running server binary. Read
 only.
 
 ```
-GET  /api/v1/compute/providers
-GET  /api/v1/compute/providers/{provider_type}
-POST /api/v1/compute/providers/{provider_type}/config/validate
+GET  /compute/providers
+GET  /compute/providers/{provider_type}
+POST /compute/providers/{provider_type}/config/validate
 ```
 
 `POST .../config/validate` takes a candidate pool config and runs
@@ -100,15 +103,15 @@ server persists the pool config in its `SessionStore`-equivalent
 database table.
 
 ```
-GET    /api/v1/compute/pools
-POST   /api/v1/compute/pools                       # create
-GET    /api/v1/compute/pools/{name}
-GET    /api/v1/compute/pools/{name}/config
-PUT    /api/v1/compute/pools/{name}/config         # replace config
-DELETE /api/v1/compute/pools/{name}
-GET    /api/v1/compute/pools/{name}/status
-POST   /api/v1/compute/pools/{name}/pause
-POST   /api/v1/compute/pools/{name}/resume
+GET    /compute/pools
+POST   /compute/pools                       # create
+GET    /compute/pools/{name}
+GET    /compute/pools/{name}/config
+PUT    /compute/pools/{name}/config         # replace config
+DELETE /compute/pools/{name}
+GET    /compute/pools/{name}/status
+POST   /compute/pools/{name}/pause
+POST   /compute/pools/{name}/resume
 ```
 
 #### 3.2.1 Pool config blob
@@ -119,7 +122,7 @@ specific. Secret values are **references**, never inline literals
 (see § 3.5).
 
 ```jsonc
-// POST /api/v1/compute/pools
+// POST /compute/pools
 {
   "name": "morph-prod",
   "config": {
@@ -146,11 +149,11 @@ by the provider impl.
 ### 3.3 Compute nodes (instances inside a pool)
 
 ```
-GET    /api/v1/compute/pools/{pool}/nodes
-GET    /api/v1/compute/pools/{pool}/nodes/{node_id}
-DELETE /api/v1/compute/pools/{pool}/nodes/{node_id}
-POST   /api/v1/compute/pools/{pool}/nodes/{node_id}/exec
-GET    /api/v1/compute/pools/{pool}/nodes/{node_id}/logs       # SSE stream
+GET    /compute/pools/{pool}/nodes
+GET    /compute/pools/{pool}/nodes/{node_id}
+DELETE /compute/pools/{pool}/nodes/{node_id}
+POST   /compute/pools/{pool}/nodes/{node_id}/exec
+GET    /compute/pools/{pool}/nodes/{node_id}/logs       # SSE stream
 ```
 
 Node creation is **not** a top-level endpoint. Nodes are spawned by
@@ -206,17 +209,17 @@ Notes:
 ### 3.4 Agents
 
 ```
-GET    /api/v1/agents                # list all agents the caller can see
-POST   /api/v1/agents                # create a new agent on a pool
-GET    /api/v1/agents/{id}           # describe (incl. compute node + pool)
-DELETE /api/v1/agents/{id}           # tear down conversation + node
-GET    /api/v1/agents/{id}/status
+GET    /agents                # list all agents the caller can see
+POST   /agents                # create a new agent on a pool
+GET    /agents/{id}           # describe (incl. compute node + pool)
+DELETE /agents/{id}           # tear down conversation + node
+GET    /agents/{id}/status
 ```
 
 #### 3.4.1 Create
 
 ```jsonc
-// POST /api/v1/agents
+// POST /agents
 {
   "pool": "morph-prod",
   "image": "overacp/loop:latest",   // optional, falls back to pool default
@@ -256,17 +259,17 @@ The controlplane:
 
 The `compute` block is the answer to "which node is this agent
 on" — it lets operators jump straight from a misbehaving agent to
-the underlying VM via `/api/v1/compute/pools/{pool}/nodes/{node_id}`.
+the underlying VM via `/compute/pools/{pool}/nodes/{node_id}`.
 
 ### 3.5 Sending and receiving ACP commands
 
 Two flavours, both keyed on `agent_id`:
 
 ```
-POST   /api/v1/agents/{id}/messages           # enqueue a user message
-GET    /api/v1/agents/{id}/messages?since=…   # poll the conversation history
-GET    /api/v1/agents/{id}/stream             # SSE: stream/textDelta, stream/toolCall, ...
-POST   /api/v1/agents/{id}/cancel             # cancel the current turn
+POST   /agents/{id}/messages           # enqueue a user message
+GET    /agents/{id}/messages?since=…   # poll the conversation history
+GET    /agents/{id}/stream             # SSE: stream/textDelta, stream/toolCall, ...
+POST   /agents/{id}/cancel             # cancel the current turn
 ```
 
 These are **REST adapters over the JSON-RPC verbs from the wire

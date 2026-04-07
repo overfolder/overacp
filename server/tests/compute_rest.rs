@@ -1,4 +1,4 @@
-//! End-to-end JSON round-trip tests for `/api/v1/compute/...`.
+//! End-to-end JSON round-trip tests for `/compute/...`.
 //! Drives the axum router via `tower::ServiceExt::oneshot` so the
 //! tests don't need a real socket.
 
@@ -53,7 +53,7 @@ fn parse<T: DeserializeOwned>(b: &Bytes) -> T {
 #[tokio::test]
 async fn lists_compiled_in_providers() {
     let app = app();
-    let (status, body) = send(&app, "GET", "/api/v1/compute/providers", None).await;
+    let (status, body) = send(&app, "GET", "/compute/providers", None).await;
     assert_eq!(status, StatusCode::OK);
     let list: ProvidersList = parse(&body);
     let names: Vec<_> = list
@@ -68,12 +68,12 @@ async fn lists_compiled_in_providers() {
 #[tokio::test]
 async fn describes_a_single_provider_and_404s_for_unknown() {
     let app = app();
-    let (status, body) = send(&app, "GET", "/api/v1/compute/providers/morph", None).await;
+    let (status, body) = send(&app, "GET", "/compute/providers/morph", None).await;
     assert_eq!(status, StatusCode::OK);
     let info: ProviderInfo = parse(&body);
     assert_eq!(info.provider_type, "morph");
 
-    let (status, _) = send(&app, "GET", "/api/v1/compute/providers/nope", None).await;
+    let (status, _) = send(&app, "GET", "/compute/providers/nope", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -83,7 +83,7 @@ async fn validate_endpoint_accepts_kafka_connect_style_body() {
     let (status, body) = send(
         &app,
         "POST",
-        "/api/v1/compute/providers/morph/config/validate",
+        "/compute/providers/morph/config/validate",
         Some(FIXTURE_VALIDATE),
     )
     .await;
@@ -107,7 +107,7 @@ async fn validate_reports_missing_required_keys() {
     let (status, body) = send(
         &app,
         "POST",
-        "/api/v1/compute/providers/morph/config/validate",
+        "/compute/providers/morph/config/validate",
         Some(&bad),
     )
     .await;
@@ -134,7 +134,7 @@ async fn validate_treats_secret_refs_as_present_for_numeric_keys() {
     let (status, body) = send(
         &app,
         "POST",
-        "/api/v1/compute/providers/morph/config/validate",
+        "/compute/providers/morph/config/validate",
         Some(&body_in),
     )
     .await;
@@ -162,7 +162,7 @@ async fn validate_accepts_bare_object_body_without_config_wrapper() {
     let (status, body) = send(
         &app,
         "POST",
-        "/api/v1/compute/providers/morph/config/validate",
+        "/compute/providers/morph/config/validate",
         Some(&bare),
     )
     .await;
@@ -178,7 +178,7 @@ async fn validate_400s_when_body_isnt_a_flat_string_map() {
     let (status, _) = send(
         &app,
         "POST",
-        "/api/v1/compute/providers/morph/config/validate",
+        "/compute/providers/morph/config/validate",
         Some(&bad),
     )
     .await;
@@ -192,7 +192,7 @@ async fn create_get_round_trips_secret_refs_unchanged() {
     let app = app();
 
     // Create.
-    let (status, body) = send(&app, "POST", "/api/v1/compute/pools", Some(FIXTURE_CREATE)).await;
+    let (status, body) = send(&app, "POST", "/compute/pools", Some(FIXTURE_CREATE)).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -210,13 +210,13 @@ async fn create_get_round_trips_secret_refs_unchanged() {
     );
 
     // GET full pool.
-    let (status, body) = send(&app, "GET", "/api/v1/compute/pools/morph-prod", None).await;
+    let (status, body) = send(&app, "GET", "/compute/pools/morph-prod", None).await;
     assert_eq!(status, StatusCode::OK);
     let got: PoolView = parse(&body);
     assert_eq!(got.config, created.config);
 
     // GET .../config — same shape, secret refs preserved verbatim.
-    let (status, body) = send(&app, "GET", "/api/v1/compute/pools/morph-prod/config", None).await;
+    let (status, body) = send(&app, "GET", "/compute/pools/morph-prod/config", None).await;
     assert_eq!(status, StatusCode::OK);
     let cfg: serde_json::Value = parse(&body);
     let echoed = cfg.get("config").unwrap();
@@ -232,9 +232,9 @@ async fn create_get_round_trips_secret_refs_unchanged() {
 #[tokio::test]
 async fn list_summaries_include_provider_type() {
     let app = app();
-    send(&app, "POST", "/api/v1/compute/pools", Some(FIXTURE_CREATE)).await;
+    send(&app, "POST", "/compute/pools", Some(FIXTURE_CREATE)).await;
 
-    let (status, body) = send(&app, "GET", "/api/v1/compute/pools", None).await;
+    let (status, body) = send(&app, "GET", "/compute/pools", None).await;
     assert_eq!(status, StatusCode::OK);
     let list: Vec<PoolSummary> = parse(&body);
     assert_eq!(list.len(), 1);
@@ -245,8 +245,8 @@ async fn list_summaries_include_provider_type() {
 #[tokio::test]
 async fn duplicate_create_is_409() {
     let app = app();
-    send(&app, "POST", "/api/v1/compute/pools", Some(FIXTURE_CREATE)).await;
-    let (status, _) = send(&app, "POST", "/api/v1/compute/pools", Some(FIXTURE_CREATE)).await;
+    send(&app, "POST", "/compute/pools", Some(FIXTURE_CREATE)).await;
+    let (status, _) = send(&app, "POST", "/compute/pools", Some(FIXTURE_CREATE)).await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
 
@@ -258,7 +258,7 @@ async fn create_with_invalid_config_is_422_with_structured_errors() {
         "config": { "provider.class": "morph" }
     })
     .to_string();
-    let (status, body) = send(&app, "POST", "/api/v1/compute/pools", Some(&body)).await;
+    let (status, body) = send(&app, "POST", "/compute/pools", Some(&body)).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     let result: ValidationResult = parse(&body);
     assert!(!result.valid);
@@ -273,14 +273,14 @@ async fn create_with_malformed_config_is_400() {
         "config": { "provider.class": "morph", "n": 1 }
     })
     .to_string();
-    let (status, _) = send(&app, "POST", "/api/v1/compute/pools", Some(&body)).await;
+    let (status, _) = send(&app, "POST", "/compute/pools", Some(&body)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
 async fn put_config_replaces_and_round_trips() {
     let app = app();
-    send(&app, "POST", "/api/v1/compute/pools", Some(FIXTURE_CREATE)).await;
+    send(&app, "POST", "/compute/pools", Some(FIXTURE_CREATE)).await;
 
     let new_cfg = json!({
         "config": {
@@ -294,7 +294,7 @@ async fn put_config_replaces_and_round_trips() {
     let (status, body) = send(
         &app,
         "PUT",
-        "/api/v1/compute/pools/morph-prod/config",
+        "/compute/pools/morph-prod/config",
         Some(&new_cfg),
     )
     .await;
@@ -319,7 +319,7 @@ async fn put_config_replaces_and_round_trips() {
 #[tokio::test]
 async fn put_config_rejects_provider_class_change() {
     let app = app();
-    send(&app, "POST", "/api/v1/compute/pools", Some(FIXTURE_CREATE)).await;
+    send(&app, "POST", "/compute/pools", Some(FIXTURE_CREATE)).await;
     let body = json!({
         "config": { "provider.class": "local-process" }
     })
@@ -327,7 +327,7 @@ async fn put_config_rejects_provider_class_change() {
     let (status, _) = send(
         &app,
         "PUT",
-        "/api/v1/compute/pools/morph-prod/config",
+        "/compute/pools/morph-prod/config",
         Some(&body),
     )
     .await;
@@ -337,12 +337,12 @@ async fn put_config_rejects_provider_class_change() {
 #[tokio::test]
 async fn pause_resume_updates_status() {
     let app = app();
-    send(&app, "POST", "/api/v1/compute/pools", Some(FIXTURE_CREATE)).await;
+    send(&app, "POST", "/compute/pools", Some(FIXTURE_CREATE)).await;
 
     let (status, body) = send(
         &app,
         "POST",
-        "/api/v1/compute/pools/morph-prod/pause",
+        "/compute/pools/morph-prod/pause",
         Some("{}"),
     )
     .await;
@@ -350,7 +350,7 @@ async fn pause_resume_updates_status() {
     let pool: PoolView = parse(&body);
     assert_eq!(pool.status, PoolStatus::Paused);
 
-    let (status, body) = send(&app, "GET", "/api/v1/compute/pools/morph-prod/status", None).await;
+    let (status, body) = send(&app, "GET", "/compute/pools/morph-prod/status", None).await;
     assert_eq!(status, StatusCode::OK);
     let s: PoolStatusResponse = parse(&body);
     assert_eq!(s.state, PoolStatus::Paused);
@@ -359,7 +359,7 @@ async fn pause_resume_updates_status() {
     let (status, body) = send(
         &app,
         "POST",
-        "/api/v1/compute/pools/morph-prod/resume",
+        "/compute/pools/morph-prod/resume",
         Some("{}"),
     )
     .await;
@@ -371,11 +371,11 @@ async fn pause_resume_updates_status() {
 #[tokio::test]
 async fn delete_pool_removes_it() {
     let app = app();
-    send(&app, "POST", "/api/v1/compute/pools", Some(FIXTURE_CREATE)).await;
+    send(&app, "POST", "/compute/pools", Some(FIXTURE_CREATE)).await;
 
-    let (status, _) = send(&app, "DELETE", "/api/v1/compute/pools/morph-prod", None).await;
+    let (status, _) = send(&app, "DELETE", "/compute/pools/morph-prod", None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    let (status, _) = send(&app, "GET", "/api/v1/compute/pools/morph-prod", None).await;
+    let (status, _) = send(&app, "GET", "/compute/pools/morph-prod", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
