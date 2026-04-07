@@ -20,3 +20,28 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: test
         run: cargo test --all-features --workspace
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Tests with coverage
+        run: cargo llvm-cov clean --workspace && cargo llvm-cov --workspace --lcov --output-path lcov.info
+        env:
+          RUST_LOG: warn
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: overfolder/overacp
+          fail_ci_if_error: false
+      - name: Coverage summary
+        run: cargo llvm-cov --workspace --summary-only
