@@ -61,4 +61,28 @@ impl AppState {
     pub fn pool_runtime(&self, pool: &str) -> Option<Arc<dyn ComputeProvider>> {
         self.pool_runtimes.read().unwrap().get(pool).cloned()
     }
+
+    /// Atomic "get or instantiate" for pool runtimes. Holds the
+    /// write lock across the existence check + insert so concurrent
+    /// callers can't both run `make()` and overwrite each other —
+    /// see the TOCTOU note in `agents::provider_for_pool`.
+    ///
+    /// `make` only runs if no entry exists yet for `pool`. If it
+    /// returns an error the map is left untouched.
+    pub fn pool_runtime_get_or_try_insert<F, E>(
+        &self,
+        pool: &str,
+        make: F,
+    ) -> Result<Arc<dyn ComputeProvider>, E>
+    where
+        F: FnOnce() -> Result<Arc<dyn ComputeProvider>, E>,
+    {
+        let mut guard = self.pool_runtimes.write().unwrap();
+        if let Some(existing) = guard.get(pool) {
+            return Ok(existing.clone());
+        }
+        let provider = make()?;
+        guard.insert(pool.to_owned(), provider.clone());
+        Ok(provider)
+    }
 }

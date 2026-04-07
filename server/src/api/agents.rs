@@ -103,7 +103,7 @@ async fn create_agent(
 
     let handle = provider.create_node(spec).await?;
 
-    state
+    if let Err(e) = state
         .store
         .upsert_node(ComputeNode {
             node_id: handle.id.0.clone(),
@@ -113,7 +113,14 @@ async fn create_agent(
             created_at: Utc::now(),
             deleted_at: None,
         })
-        .await?;
+        .await
+    {
+        // Roll back the live node so a failed metadata insert
+        // doesn't leak compute. Mirrors the rollback for the
+        // `create_agent` insert below.
+        let _ = provider.delete_node(&handle.id).await;
+        return Err(e.into());
+    }
 
     let agent = Agent {
         id: agent_id.clone(),
@@ -232,18 +239,26 @@ async fn provider_for_pool(
     let raw = pool_config_to_raw(&pool.config_json)?;
     let resolved = state.resolver.resolve(raw).await?;
 
+    // Fast path: provider already cached, no lock contention.
     if let Some(existing) = state.pool_runtime(&pool.name) {
         return Ok((existing, resolved));
     }
 
+    // Slow path: instantiate under the write lock so two concurrent
+    // callers can't both build a provider and orphan one of them.
+    // `pool_runtime_get_or_try_insert` re-checks under the lock.
     let plugin = state.providers.get(&pool.provider_type).ok_or_else(|| {
         ApiError::BadRequest(format!(
             "no compiled-in provider plugin for type '{}'",
             pool.provider_type
         ))
     })?;
-    let provider = plugin.instantiate(resolved.clone())?;
-    state.register_pool_runtime(&pool.name, provider.clone());
+    let resolved_for_make = resolved.clone();
+    let provider = state.pool_runtime_get_or_try_insert(&pool.name, || {
+        plugin
+            .instantiate(resolved_for_make)
+            .map_err(ApiError::from)
+    })?;
     Ok((provider, resolved))
 }
 
