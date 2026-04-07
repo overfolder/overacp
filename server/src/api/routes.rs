@@ -18,8 +18,8 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::api::dto::{
-    CreatePoolRequest, PoolConfigBody, PoolStatusResponse, PoolSummary, PoolView,
-    ProviderInfo, ProvidersList, ValidationResult,
+    CreatePoolRequest, PoolConfigBody, PoolStatusResponse, PoolSummary, PoolView, ProviderInfo,
+    ProvidersList, ValidationResult,
 };
 use crate::api::error::ApiError;
 use crate::api::pool_config::PoolConfig;
@@ -34,16 +34,16 @@ pub fn router() -> Router<AppState> {
     Router::new()
         // § 3.1 — providers
         .route("/api/v1/compute/providers", get(list_providers))
-        .route("/api/v1/compute/providers/:provider_type", get(get_provider))
+        .route(
+            "/api/v1/compute/providers/:provider_type",
+            get(get_provider),
+        )
         .route(
             "/api/v1/compute/providers/:provider_type/config/validate",
             post(validate_provider_config),
         )
         // § 3.2 — pools
-        .route(
-            "/api/v1/compute/pools",
-            get(list_pools).post(create_pool),
-        )
+        .route("/api/v1/compute/pools", get(list_pools).post(create_pool))
         .route(
             "/api/v1/compute/pools/:name",
             get(get_pool).delete(delete_pool),
@@ -110,9 +110,7 @@ async fn validate_provider_config(
 
 // ── § 3.2 — pools ───────────────────────────────────────────────
 
-async fn list_pools(
-    State(s): State<AppState>,
-) -> Result<Json<Vec<PoolSummary>>, ApiError> {
+async fn list_pools(State(s): State<AppState>) -> Result<Json<Vec<PoolSummary>>, ApiError> {
     let pools = s.store.list_pools().await?;
     Ok(Json(
         pools
@@ -172,7 +170,9 @@ async fn get_pool_config(
 ) -> Result<Json<PoolConfigBody>, ApiError> {
     let pool = require_pool(&s, &name).await?;
     // Echo verbatim — secret refs stay in their `${...}` form.
-    Ok(Json(PoolConfigBody { config: pool.config_json }))
+    Ok(Json(PoolConfigBody {
+        config: pool.config_json,
+    }))
 }
 
 async fn replace_pool_config(
@@ -257,9 +257,9 @@ fn accept_or_reject(
     provider_type: &str,
     config: &PoolConfig,
 ) -> Result<(), ApiError> {
-    let plugin = registry.get(provider_type).ok_or_else(|| {
-        ApiError::BadRequest(format!("unknown provider.class '{provider_type}'"))
-    })?;
+    let plugin = registry
+        .get(provider_type)
+        .ok_or_else(|| ApiError::BadRequest(format!("unknown provider.class '{provider_type}'")))?;
     let errors = plugin.validate(config);
     if errors.is_empty() {
         Ok(())

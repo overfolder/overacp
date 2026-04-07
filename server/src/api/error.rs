@@ -50,11 +50,9 @@ impl IntoResponse for ApiError {
             Self::InvalidConfig(result) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, Json(result)).into_response()
             }
-            Self::Store(StoreError::NotFound) => (
-                StatusCode::NOT_FOUND,
-                Json(json!({ "error": "not_found" })),
-            )
-                .into_response(),
+            Self::Store(StoreError::NotFound) => {
+                (StatusCode::NOT_FOUND, Json(json!({ "error": "not_found" }))).into_response()
+            }
             Self::Store(StoreError::Conflict { what }) => (
                 StatusCode::CONFLICT,
                 Json(json!({ "error": "conflict", "message": what })),

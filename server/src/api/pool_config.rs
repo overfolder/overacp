@@ -40,9 +40,7 @@ pub struct PoolConfig {
 pub enum PoolConfigParseError {
     #[error("config must be a JSON object")]
     NotAnObject,
-    #[error(
-        "value for key '{key}' must be a string (Kafka-Connect-style flat map); got {kind}"
-    )]
+    #[error("value for key '{key}' must be a string (Kafka-Connect-style flat map); got {kind}")]
     NonStringValue { key: String, kind: &'static str },
     #[error("required key '{0}' is missing")]
     MissingProviderClass(&'static str),
@@ -55,9 +53,7 @@ impl PoolConfig {
     /// the first shape violation; the caller maps the error to
     /// HTTP 400.
     pub fn parse(value: &Value) -> Result<Self, PoolConfigParseError> {
-        let object = value
-            .as_object()
-            .ok_or(PoolConfigParseError::NotAnObject)?;
+        let object = value.as_object().ok_or(PoolConfigParseError::NotAnObject)?;
         Self::parse_object(object)
     }
 
@@ -75,7 +71,9 @@ impl PoolConfig {
             entries.insert(k.clone(), s);
         }
         match entries.get(PROVIDER_CLASS_KEY) {
-            None => Err(PoolConfigParseError::MissingProviderClass(PROVIDER_CLASS_KEY)),
+            None => Err(PoolConfigParseError::MissingProviderClass(
+                PROVIDER_CLASS_KEY,
+            )),
             Some(v) if v.is_empty() => {
                 Err(PoolConfigParseError::EmptyProviderClass(PROVIDER_CLASS_KEY))
             }
@@ -87,7 +85,10 @@ impl PoolConfig {
     /// the parser.
     pub fn provider_class(&self) -> &str {
         // Safe: parser established this invariant.
-        self.entries.get(PROVIDER_CLASS_KEY).map(String::as_str).unwrap()
+        self.entries
+            .get(PROVIDER_CLASS_KEY)
+            .map(String::as_str)
+            .unwrap()
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {

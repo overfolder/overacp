@@ -9,8 +9,8 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
 use overacp_server::api::{
-    default_registry, PoolStatusResponse, PoolSummary, PoolView, ProviderInfo,
-    ProvidersList, ValidationResult,
+    default_registry, PoolStatusResponse, PoolSummary, PoolView, ProviderInfo, ProvidersList,
+    ValidationResult,
 };
 use overacp_server::{compute_router, AppState, InMemoryStore, PoolStatus};
 use serde::de::DeserializeOwned;
@@ -21,19 +21,11 @@ const FIXTURE_CREATE: &str = include_str!("fixtures/morph_pool_create.json");
 const FIXTURE_VALIDATE: &str = include_str!("fixtures/morph_validate.json");
 
 fn app() -> Router {
-    let state = AppState::new(
-        Arc::new(InMemoryStore::new()),
-        Arc::new(default_registry()),
-    );
+    let state = AppState::new(Arc::new(InMemoryStore::new()), Arc::new(default_registry()));
     compute_router().with_state(state)
 }
 
-async fn send(
-    app: &Router,
-    method: &str,
-    uri: &str,
-    body: Option<&str>,
-) -> (StatusCode, Bytes) {
+async fn send(app: &Router, method: &str, uri: &str, body: Option<&str>) -> (StatusCode, Bytes) {
     let mut req = Request::builder().method(method).uri(uri);
     if body.is_some() {
         req = req.header("content-type", "application/json");
@@ -60,7 +52,11 @@ async fn lists_compiled_in_providers() {
     let (status, body) = send(&app, "GET", "/api/v1/compute/providers", None).await;
     assert_eq!(status, StatusCode::OK);
     let list: ProvidersList = parse(&body);
-    let names: Vec<_> = list.providers.iter().map(|p| p.provider_type.as_str()).collect();
+    let names: Vec<_> = list
+        .providers
+        .iter()
+        .map(|p| p.provider_type.as_str())
+        .collect();
     assert!(names.contains(&"morph"));
     assert!(names.contains(&"local-process"));
 }
@@ -90,7 +86,11 @@ async fn validate_endpoint_accepts_kafka_connect_style_body() {
     assert_eq!(status, StatusCode::OK);
     let result: ValidationResult = parse(&body);
     assert_eq!(result.provider_type, "morph");
-    assert!(result.valid, "expected valid, got errors: {:?}", result.errors);
+    assert!(
+        result.valid,
+        "expected valid, got errors: {:?}",
+        result.errors
+    );
 }
 
 #[tokio::test]
@@ -188,8 +188,7 @@ async fn create_get_round_trips_secret_refs_unchanged() {
     let app = app();
 
     // Create.
-    let (status, body) =
-        send(&app, "POST", "/api/v1/compute/pools", Some(FIXTURE_CREATE)).await;
+    let (status, body) = send(&app, "POST", "/api/v1/compute/pools", Some(FIXTURE_CREATE)).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -213,13 +212,7 @@ async fn create_get_round_trips_secret_refs_unchanged() {
     assert_eq!(got.config, created.config);
 
     // GET .../config — same shape, secret refs preserved verbatim.
-    let (status, body) = send(
-        &app,
-        "GET",
-        "/api/v1/compute/pools/morph-prod/config",
-        None,
-    )
-    .await;
+    let (status, body) = send(&app, "GET", "/api/v1/compute/pools/morph-prod/config", None).await;
     assert_eq!(status, StatusCode::OK);
     let cfg: serde_json::Value = parse(&body);
     let echoed = cfg.get("config").unwrap();
@@ -249,8 +242,7 @@ async fn list_summaries_include_provider_type() {
 async fn duplicate_create_is_409() {
     let app = app();
     send(&app, "POST", "/api/v1/compute/pools", Some(FIXTURE_CREATE)).await;
-    let (status, _) =
-        send(&app, "POST", "/api/v1/compute/pools", Some(FIXTURE_CREATE)).await;
+    let (status, _) = send(&app, "POST", "/api/v1/compute/pools", Some(FIXTURE_CREATE)).await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
 
@@ -262,8 +254,7 @@ async fn create_with_invalid_config_is_422_with_structured_errors() {
         "config": { "provider.class": "morph" }
     })
     .to_string();
-    let (status, body) =
-        send(&app, "POST", "/api/v1/compute/pools", Some(&body)).await;
+    let (status, body) = send(&app, "POST", "/api/v1/compute/pools", Some(&body)).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     let result: ValidationResult = parse(&body);
     assert!(!result.valid);
@@ -278,8 +269,7 @@ async fn create_with_malformed_config_is_400() {
         "config": { "provider.class": "morph", "n": 1 }
     })
     .to_string();
-    let (status, _) =
-        send(&app, "POST", "/api/v1/compute/pools", Some(&body)).await;
+    let (status, _) = send(&app, "POST", "/api/v1/compute/pools", Some(&body)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -356,13 +346,7 @@ async fn pause_resume_updates_status() {
     let pool: PoolView = parse(&body);
     assert_eq!(pool.status, PoolStatus::Paused);
 
-    let (status, body) = send(
-        &app,
-        "GET",
-        "/api/v1/compute/pools/morph-prod/status",
-        None,
-    )
-    .await;
+    let (status, body) = send(&app, "GET", "/api/v1/compute/pools/morph-prod/status", None).await;
     assert_eq!(status, StatusCode::OK);
     let s: PoolStatusResponse = parse(&body);
     assert_eq!(s.state, PoolStatus::Paused);
@@ -385,11 +369,9 @@ async fn delete_pool_removes_it() {
     let app = app();
     send(&app, "POST", "/api/v1/compute/pools", Some(FIXTURE_CREATE)).await;
 
-    let (status, _) =
-        send(&app, "DELETE", "/api/v1/compute/pools/morph-prod", None).await;
+    let (status, _) = send(&app, "DELETE", "/api/v1/compute/pools/morph-prod", None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    let (status, _) =
-        send(&app, "GET", "/api/v1/compute/pools/morph-prod", None).await;
+    let (status, _) = send(&app, "GET", "/api/v1/compute/pools/morph-prod", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }

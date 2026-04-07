@@ -11,10 +11,7 @@ use tracing_subscriber::fmt;
 async fn main() -> Result<(), Box<dyn StdError>> {
     fmt::init();
 
-    let state = AppState::new(
-        Arc::new(InMemoryStore::new()),
-        Arc::new(default_registry()),
-    );
+    let state = AppState::new(Arc::new(InMemoryStore::new()), Arc::new(default_registry()));
     let app = Router::new()
         .route("/healthz", get(healthz))
         .merge(compute_router())

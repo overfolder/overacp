@@ -20,8 +20,8 @@ pub mod providers;
 pub mod routes;
 
 pub use dto::{
-    CreatePoolRequest, PoolConfigBody, PoolStatusResponse, PoolSummary, PoolView,
-    ProviderInfo, ProvidersList, ValidationFieldError, ValidationResult,
+    CreatePoolRequest, PoolConfigBody, PoolStatusResponse, PoolSummary, PoolView, ProviderInfo,
+    ProvidersList, ValidationFieldError, ValidationResult,
 };
 pub use error::ApiError;
 pub use pool_config::{is_secret_ref, PoolConfig, PoolConfigParseError, PROVIDER_CLASS_KEY};

@@ -140,9 +140,7 @@ impl ProviderPlugin for MorphPlugin {
                 if !is_secret_ref(v) && v.parse::<u64>().is_err() {
                     errors.push(ValidationFieldError {
                         key: key.to_string(),
-                        messages: vec![format!(
-                            "expected an unsigned integer, got '{v}'"
-                        )],
+                        messages: vec![format!("expected an unsigned integer, got '{v}'")],
                     });
                 }
             }
@@ -151,11 +149,7 @@ impl ProviderPlugin for MorphPlugin {
     }
 }
 
-fn require_present(
-    config: &PoolConfig,
-    key: &str,
-    errors: &mut Vec<ValidationFieldError>,
-) {
+fn require_present(config: &PoolConfig, key: &str, errors: &mut Vec<ValidationFieldError>) {
     match config.get(key) {
         None => errors.push(ValidationFieldError {
             key: key.to_string(),
