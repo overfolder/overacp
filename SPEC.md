@@ -137,21 +137,34 @@ traits.
   (`session/new`, `session/message`, ...) for surface compatibility, or pick
   our own and ship adapters? Leaning toward "borrow where it doesn't conflict,
   add what we need".
-- **Tool model.** `ToolHost` is the trait, MCP is the default adapter. The
-  controlplane runs MCP *clients* against operator-configured MCP servers and
-  re-exposes them through `ToolHost` as a unified `tools/list` / `tools/call`
-  surface over ACP — the agent never learns a tool came from MCP, and the
-  agent compute environment never touches the MCP server directly. This keeps
-  secrets, network egress, and credentials on the controlplane side: the
-  server mints short-lived per-session tokens and injects them into the MCP
-  client connection. Tool names are namespaced per backing server. Authors
-  who want to bypass MCP entirely can implement `ToolHost` directly as the
-  escape hatch.
+- **Tool model.** `ToolHost` is the trait, MCP is the default adapter. Tools
+  reach the agent through three controlplane-mediated sources, listed in
+  full in [`docs/design/loop-tools.md`](./docs/design/loop-tools.md):
 
-  Explicitly **not supported**: injecting MCP server configs down into the
-  child agent process so the harness runs its own MCP clients. That model
-  leaks credentials into the compute VM and bypasses the controlplane's
-  metering/auth hooks.
+  1. **ACP-tunnelled tools** — the controlplane runs MCP clients itself and
+     re-exposes them through `ToolHost` as a unified `tools/list` /
+     `tools/call` surface over the ACP tunnel. The agent never learns
+     these came from MCP. Default and recommended; keeps secrets and
+     egress on the controlplane.
+  2. **Agent-side MCP descriptors** — the controlplane includes a list of
+     MCP server descriptors (URL or stdio command, headers, short-lived
+     credentials) in the `initialize` response. The agent connects to
+     them with its own MCP client. The controlplane remains the
+     authoritative source of which servers a session sees and can revoke
+     at any time, but the agent VM does open direct sockets, so the
+     controlplane must either point those URLs at its own egress proxy
+     or accept that the listed URLs are reachable from the compute
+     environment. Deployments that want zero agent-side MCP set this
+     array to empty.
+  3. **Supervisor-injected tools** — the agent supervisor
+     (`overacp-agent`) passes a stdio or HTTP MCP descriptor to the
+     reference loop via env var or first-line handshake. Use case:
+     sandbox-local helpers (LSP, fs proxies) that should not round-trip
+     through the controlplane.
+
+  Tool names are namespaced per source (`builtin/`, `injected/`, `acp/`,
+  `mcp/<server>/`). Authors who want to bypass MCP entirely can implement
+  `ToolHost` directly as the escape hatch.
 - **Workspace sync.** Reference impl over GCS exists in Overfolder; should it
   ship as an optional crate (`overacp-workspace-gcs`) or stay product-side?
 - **Multi-agent.** Today one tunnel = one agent process. Multi-agent (a

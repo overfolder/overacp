@@ -35,6 +35,40 @@ Tracks concrete next steps. High-level roadmap lives in SPEC.md.
         *(deferred)*
 - [x] Workspace sync abstracted behind a trait (optional impl).
 
+## 0.3.x — `overloop` migration
+
+Tracked separately because the gaps surfaced after the protocol crate
+landed. Full design in
+[`docs/design/loop-tools.md`](./docs/design/loop-tools.md). All items
+block calling the loop "protocol-conformant".
+
+- [ ] Loop depends on `overacp-protocol` and consumes its method-name
+      constants instead of hard-coding strings in `loop/src/acp.rs`.
+- [ ] Loop's `Message` / `InitializeResult` types are replaced by the
+      ones in `overacp_protocol::messages`.
+- [ ] On `session/message` notification, loop fetches the message body
+      via `poll/newMessages` instead of re-running `initialize`.
+- [ ] Loop emits `stream/toolCall` and `stream/toolResult`
+      notifications around every tool invocation.
+- [ ] **Tool sources unified into one registry**, ordered:
+      built-in → supervisor-injected → ACP-tunnelled → MCP-direct.
+      Names are namespaced per source.
+  - [ ] `tools_config` typed struct in `overacp-protocol` (replaces the
+        opaque `Value` field on `InitializeResponse`).
+  - [ ] Loop reads `OVERACP_INJECTED_TOOLS` (env var) or a first-line
+        stdio handshake from the supervisor and registers stdio/HTTP
+        MCP descriptors under `injected/`.
+  - [ ] Loop calls `tools/list` over the ACP tunnel when
+        `tools_config.acp_tools_enabled` is set, registers under `acp/`,
+        routes invocations through `tools/call`.
+  - [ ] Loop spins up one MCP client per `tools_config.mcp_servers`
+        descriptor, registers under `mcp/<name>/`. Drop the legacy
+        `MCP_SERVERS` env var.
+  - [ ] New `loop/src/mcp/stdio_client.rs` for stdio-transport MCP.
+- [ ] `AgentAdapter` trait gains an `injected_tools()` hook so
+      deployment adapters can supply tool descriptors without touching
+      the supervisor.
+
 ## 0.4 — `overacp-server` (current)
 
 - [ ] Lift generic parts of `overfolder/controlplane`: WS hub, dispatcher,
