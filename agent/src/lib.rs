@@ -6,8 +6,7 @@
 //! any other `AgentAdapter` implementation), and pipes the protocol
 //! traffic between them.
 //!
-//! See `PROTOCOL.md` and `SPEC.md` at the repository root for the
-//! full design.
+//! See `docs/design/protocol.md` and `SPEC.md` for the full design.
 
 pub mod adapter;
 pub mod bridge;

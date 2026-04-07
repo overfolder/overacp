@@ -48,7 +48,7 @@ pub async fn run_with<A: AgentAdapter, S: WorkspaceSync>(
     let (ws_read, ws_sink) = connect_with_retry(&tunnel_url, &config.token).await;
 
     // 4. Spawn the child agent.
-    let proc = spawn(adapter.command())?;
+    let mut proc = spawn(adapter.command())?;
 
     info!("bridge starting: child stdio ↔ WebSocket tunnel");
 
@@ -56,7 +56,23 @@ pub async fn run_with<A: AgentAdapter, S: WorkspaceSync>(
     let exit = run_bridge(ws_read, ws_sink, proc.stdin, proc.stdout).await;
     info!("bridge exited: {exit:?}");
 
-    // 6. Push the workspace back.
+    // 6. Reap the child. tokio::process::Child does NOT kill or wait
+    //    on drop, so we must do it explicitly to avoid orphans/zombies.
+    //    Try a graceful wait first; if the bridge exited because the
+    //    tunnel closed (not the child), kill the child too.
+    match proc.child.try_wait() {
+        Ok(Some(status)) => info!("child exited: {status}"),
+        Ok(None) => {
+            info!("child still running after bridge exit; killing");
+            if let Err(e) = proc.child.kill().await {
+                tracing::warn!("failed to kill child: {e}");
+            }
+            let _ = proc.child.wait().await;
+        }
+        Err(e) => tracing::warn!("try_wait failed: {e}"),
+    }
+
+    // 7. Push the workspace back.
     sync.push().await?;
 
     Ok(())
