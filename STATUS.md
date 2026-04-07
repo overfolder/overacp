@@ -15,6 +15,7 @@ item at this stage. No protocol, server, or agent crates yet.
 | Crate | State |
 |---|---|
 | `overloop` | Vendored, builds. Reference agent. |
+| `overacp-compute-core` | Landed. `ComputeProvider` trait + node/exec/log types + `${provider:path:key}` config resolver (env + file). |
 | `overacp-protocol` | Not started. |
 | `overacp-agent` | Not started. |
 | `overacp-server` | Not started. |
