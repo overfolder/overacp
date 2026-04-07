@@ -1,0 +1,38 @@
+[package]
+name = "overacp-agent"
+version = "0.1.0"
+edition = "2021"
+description = "over/ACP agent-side WebSocket supervisor: connects to the controlplane, spawns a child agent process (overloop or any AgentAdapter impl), and bridges their stdio."
+license = "Apache-2.0"
+repository = "https://github.com/overfolder/overacp"
+
+[lib]
+name = "overacp_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "overacp-agent"
+path = "src/main.rs"
+
+[dependencies]
+overacp-protocol = { path = "../protocol" }
+
+tokio = { version = "1.50.0", features = ["full"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3.32"
+
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+anyhow = "1.0.102"
+dotenvy = "0.15.7"
+url = "2.5.8"
+rustls = { version = "0.23.37", features = ["ring"] }
+
+[dev-dependencies]
+tokio = { version = "1.50.0", features = ["full", "test-util"] }
+
+[lints]
+workspace = true
