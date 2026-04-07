@@ -1,5 +1,6 @@
 pub mod api;
 pub mod auth;
+pub mod basic_auth;
 pub mod routes;
 pub mod state;
 pub mod store;
@@ -7,6 +8,7 @@ pub mod tunnel;
 
 pub use api::{compute_nodes_router, compute_router};
 pub use auth::{AuthError, Authenticator, Claims, StaticJwtAuthenticator};
+pub use basic_auth::{HtpasswdError, HtpasswdFile};
 pub use routes::router;
 pub use state::AppState;
 pub use store::{

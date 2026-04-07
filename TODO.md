@@ -85,6 +85,11 @@ Full design in
       three new tables for compute pools, compute nodes, and agents.
 - [ ] Reference impls: in-memory + SQLite. Postgres later.
 - [ ] `Authenticator` trait. Reference impl: static JWT (HS256).
+- [x] HTTP Basic auth on control-plane endpoints (`/compute/*`, admin
+      `/agents`), backed by an htpasswd(5) file (bcrypt only) via
+      `OVERACP_BASIC_AUTH_FILE`. `OVERACP_DEFAULT_USER_ID` supplies the
+      user UUID attributed to Basic-auth writes. See
+      `docs/design/controlplane.md` § 3.
 - [ ] `QuotaPolicy` trait. Reference impl: no-op (everything allowed).
 - [ ] `ToolHost` trait. Reference impl wired to the `tools/list` /
       `tools/call` ACP surface (uses the `overacp-tools-mcp`

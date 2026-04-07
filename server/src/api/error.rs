@@ -1,7 +1,7 @@
 //! Handler-facing error type. Mapped to HTTP status codes by
 //! the axum [`IntoResponse`] impl.
 
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
@@ -19,6 +19,8 @@ pub enum ApiError {
     NotFound(String),
     #[error("bad request: {0}")]
     BadRequest(String),
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
     /// Body parsed as JSON but did not match the flat-string-map
     /// shape required by `PoolConfig`.
     #[error("malformed pool config: {0}")]
@@ -46,6 +48,18 @@ impl IntoResponse for ApiError {
                 Json(json!({ "error": "bad_request", "message": msg })),
             )
                 .into_response(),
+            Self::Unauthorized(msg) => {
+                let mut resp = (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": "unauthorized", "message": msg })),
+                )
+                    .into_response();
+                resp.headers_mut().insert(
+                    header::WWW_AUTHENTICATE,
+                    HeaderValue::from_static("Basic realm=\"overacp\""),
+                );
+                resp
+            }
             Self::MalformedConfig(e) => (
                 StatusCode::BAD_REQUEST,
                 Json(json!({ "error": "bad_request", "message": e.to_string() })),

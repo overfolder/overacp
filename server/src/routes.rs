@@ -5,6 +5,7 @@ use std::sync::Arc;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::from_fn_with_state;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
@@ -13,16 +14,25 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::api::{agents_router, compute_nodes_router, compute_router};
+use crate::basic_auth::require_basic_auth;
 use crate::state::AppState;
 use crate::tunnel::run::{run_tunnel, TunnelContext};
 
 pub fn router(state: AppState) -> Router {
+    // Control-plane sub-routers (operator/orchestrator-facing). These
+    // sit behind HTTP Basic auth — see `basic_auth::require_basic_auth`
+    // and `docs/design/controlplane.md` § 3.
+    let control_plane = Router::new()
+        .merge(compute_router())
+        .merge(compute_nodes_router())
+        .route_layer(from_fn_with_state(state.clone(), require_basic_auth));
+
     Router::new()
         .route("/healthz", get(healthz))
         .route("/tunnel/:session_id", get(tunnel_upgrade))
-        .merge(compute_router())
-        .merge(compute_nodes_router())
+        // Agent-facing REST adapters (§ 3.5) — JWT only, no Basic auth.
         .merge(agents_router())
+        .merge(control_plane)
         .with_state(state)
 }
 

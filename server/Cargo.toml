@@ -30,6 +30,8 @@ futures-util = { workspace = true }
 dashmap = { workspace = true }
 jsonwebtoken = { workspace = true }
 dotenvy = { workspace = true }
+bcrypt = "0.15"
+base64 = "0.22"
 
 [lints]
 workspace = true
@@ -38,3 +40,5 @@ workspace = true
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+bcrypt = "0.15"
+base64 = "0.22"

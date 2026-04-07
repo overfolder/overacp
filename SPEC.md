@@ -89,8 +89,12 @@ for the full design.
   no per-user dashboard. Build those on top.
 - **Not a tool registry.** Tools come from the agent's built-ins, from MCP
   servers you wire in, or from your own `ToolHost` implementation.
-- **Not opinionated about identity.** JWT works out of the box for dev; bring
-  your own `Authenticator` for production (OIDC, API keys, mTLS, ...).
+- **Not opinionated about identity.** Agent-facing routes use the
+  session JWT; control-plane routes (`/compute/*`, admin `/agents`)
+  use HTTP Basic backed by an htpasswd(5) file
+  (`OVERACP_BASIC_AUTH_FILE`, bcrypt only). Bring your own
+  `Authenticator` for production (OIDC, API keys, mTLS, ...). See
+  [`docs/design/controlplane.md`](./docs/design/controlplane.md) § 3.
 - **Not opinionated about storage.** Server traits over Postgres, SQLite, or
   in-memory. Pick what fits.
 - **Not coupled to one compute provider.** Reference adapters for local
