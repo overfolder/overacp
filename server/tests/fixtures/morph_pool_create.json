@@ -1,0 +1,14 @@
+{
+  "name": "morph-prod",
+  "config": {
+    "provider.class": "morph",
+    "morph.api_key": "${env:MORPH_API_KEY}",
+    "morph.base_url": "https://api.morph.so",
+    "default.image": "ghcr.io/overfolder/overacp-agent:latest",
+    "default.cpu": "4",
+    "default.memory_gb": "8",
+    "default.disk_gb": "20",
+    "max_nodes": "50",
+    "idle_ttl_s": "1800"
+  }
+}
