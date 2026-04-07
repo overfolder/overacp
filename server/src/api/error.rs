@@ -7,6 +7,8 @@ use axum::Json;
 use serde_json::json;
 use thiserror::Error;
 
+use overacp_compute_core::ProviderError;
+
 use crate::api::dto::ValidationResult;
 use crate::api::pool_config::PoolConfigParseError;
 use crate::store::StoreError;
@@ -27,6 +29,8 @@ pub enum ApiError {
     InvalidConfig(ValidationResult),
     #[error(transparent)]
     Store(#[from] StoreError),
+    #[error(transparent)]
+    Provider(#[from] ProviderError),
 }
 
 impl IntoResponse for ApiError {
@@ -56,6 +60,21 @@ impl IntoResponse for ApiError {
             Self::Store(StoreError::Conflict { what }) => (
                 StatusCode::CONFLICT,
                 Json(json!({ "error": "conflict", "message": what })),
+            )
+                .into_response(),
+            Self::Provider(ProviderError::NotFound(id)) => (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "not_found", "message": format!("node '{id}'") })),
+            )
+                .into_response(),
+            Self::Provider(ProviderError::Timeout) => (
+                StatusCode::GATEWAY_TIMEOUT,
+                Json(json!({ "error": "timeout" })),
+            )
+                .into_response(),
+            Self::Provider(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "provider", "message": e.to_string() })),
             )
                 .into_response(),
             Self::Store(StoreError::Backend(e)) => (

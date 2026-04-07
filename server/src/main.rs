@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::{routing::get, Router};
 use overacp_server::api::default_registry;
-use overacp_server::{compute_router, AppState, InMemoryStore};
+use overacp_server::{compute_nodes_router, compute_router, AppState, InMemoryStore};
 use tokio::net::TcpListener;
 use tracing_subscriber::fmt;
 
@@ -15,6 +15,7 @@ async fn main() -> Result<(), Box<dyn StdError>> {
     let app = Router::new()
         .route("/healthz", get(healthz))
         .merge(compute_router())
+        .merge(compute_nodes_router())
         .with_state(state);
 
     let listener = TcpListener::bind("0.0.0.0:8080").await?;
