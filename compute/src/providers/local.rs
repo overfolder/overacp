@@ -233,7 +233,8 @@ impl ComputeProvider for LocalProvider {
             .current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
         if let Some(env) = &req.env {
             for (k, v) in env {
                 cmd.env(k, v);

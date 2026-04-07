@@ -56,8 +56,10 @@ Agent            a logical conversation pinned to one ComputeNode
 
 - **`ComputeProvider`** is a Rust trait. Each provider type
   (`morph`, `docker`, `local-process`, `k8s`, ...) is a separate
-  impl, distributed as its own crate so the server binary can pick
-  which to compile in.
+  impl. In-tree providers ship as modules under
+  `overacp-compute-core::providers::*` so the server binary picks
+  them up automatically; out-of-tree providers can still live in
+  their own crate and be registered at startup.
 - **`ComputePool`** is a *configured instance* of a provider. The
   same provider type can back multiple pools (e.g. a `morph-prod`
   pool and a `morph-staging` pool with different API keys and
@@ -358,20 +360,26 @@ Notes:
 - All errors flow through `ProviderError` so the REST layer can
   translate them to consistent HTTP status codes.
 
-## 5. Reference providers (planned)
+## 5. Reference providers
 
-| Crate                          | `provider.class`  | Description |
+In-tree providers live as modules under
+`overacp-compute-core::providers::*`. Out-of-tree providers (with
+heavy or proprietary dependencies) can ship as separate crates and
+register themselves at server startup.
+
+| Module / crate                                  | `provider.class`  | Description |
 |---|---|---|
-| `overacp-compute-local`        | `local-process`   | Spawns `overacp-agent` as a local subprocess. Zero infra; great for `cargo run --example` and CI. |
-| `overacp-compute-docker`       | `docker`          | Pulls an image and runs the agent inside a container via the Docker daemon. |
-| `overacp-compute-morph`        | `morph`           | Lifted from Overfolder's existing `backend/src/routes/workspace.rs:125-442` Morph integration. |
-| `overacp-compute-k8s`          | `kubernetes`      | (Future.) Creates a Pod per agent. |
-| `overacp-compute-firecracker`  | `firecracker`     | (Future.) Bare-VMM, for the bring-your-own-cluster case. |
+| `overacp-compute-core::providers::local`        | `local-process`   | Landed. Spawns the agent binary as a local subprocess. Zero infra; great for `cargo run --example` and CI. |
+| `overacp-compute-core::providers::docker`       | `docker`          | (Planned.) Pulls an image and runs the agent inside a container via the Docker daemon. |
+| `overacp-compute-morph` (separate crate)        | `morph`           | (Planned.) Lifted from Overfolder's existing `backend/src/routes/workspace.rs:125-442` Morph integration. Kept out-of-tree because of the Morph SDK dependency. |
+| `overacp-compute-k8s`                           | `kubernetes`      | (Future.) Creates a Pod per agent. |
+| `overacp-compute-firecracker`                   | `firecracker`     | (Future.) Bare-VMM, for the bring-your-own-cluster case. |
 
-The server binary picks providers at compile time (Cargo features)
-or — better — loads them via dyn dispatch from a `ProviderRegistry`
-populated at startup. Each provider crate stays small (one trait
-impl, its own HTTP/CLI client, and per-provider tests).
+The server binary loads providers via dyn dispatch from a
+`ProviderRegistry` populated at startup. In-tree provider modules
+keep `overacp-compute-core` self-contained for the demo path; the
+trait stays object-safe so out-of-tree crates can plug in without
+recompiling the server.
 
 ## 6. Persistence model
 
