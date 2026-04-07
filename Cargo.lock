@@ -1027,8 +1027,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "bytes",
  "chrono",
+ "futures",
  "http-body-util",
+ "overacp-compute-core",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
