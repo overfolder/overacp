@@ -38,9 +38,8 @@ impl ConfigProvider for FileConfigProvider {
         })?;
         let pb = PathBuf::from(path);
         let value = self.load(&pb).await?;
-        let resolved = lookup_dotted(&value, key).ok_or_else(|| {
-            ConfigError::MissingKey(format!("file:{path}:{key}"))
-        })?;
+        let resolved = lookup_dotted(&value, key)
+            .ok_or_else(|| ConfigError::MissingKey(format!("file:{path}:{key}")))?;
         value_to_string(&resolved).ok_or_else(|| ConfigError::InvalidValue {
             key: format!("file:{path}:{key}"),
             msg: "value is not a scalar".into(),
@@ -54,19 +53,19 @@ impl FileConfigProvider {
         if let Some(v) = guard.get(path) {
             return Ok(v.clone());
         }
-        let raw = fs::read_to_string(path).await.map_err(|e| {
-            ConfigError::Resolution {
+        let raw = fs::read_to_string(path)
+            .await
+            .map_err(|e| ConfigError::Resolution {
                 reference: format!("file:{}", path.display()),
                 source: Box::new(e),
-            }
-        })?;
+            })?;
         let parsed = match path.extension().and_then(|e| e.to_str()) {
-            Some("json") => serde_json::from_str::<Value>(&raw).map_err(|e| {
-                ConfigError::Resolution {
+            Some("json") => {
+                serde_json::from_str::<Value>(&raw).map_err(|e| ConfigError::Resolution {
                     reference: format!("file:{}", path.display()),
                     source: Box::new(e),
-                }
-            })?,
+                })?
+            }
             Some("toml") => {
                 let v: toml::Value = toml::from_str(&raw).map_err(|e| ConfigError::Resolution {
                     reference: format!("file:{}", path.display()),

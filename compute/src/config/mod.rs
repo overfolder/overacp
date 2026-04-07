@@ -34,7 +34,11 @@ impl RawConfig {
 
 impl<K: Into<String>, V: Into<String>> FromIterator<(K, V)> for RawConfig {
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
-        Self(iter.into_iter().map(|(k, v)| (k.into(), v.into())).collect())
+        Self(
+            iter.into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+        )
     }
 }
 

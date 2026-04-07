@@ -89,7 +89,10 @@ mod tests {
 
     #[test]
     fn plain_literal() {
-        assert_eq!(parse("hello").unwrap(), vec![Segment::Literal("hello".into())]);
+        assert_eq!(
+            parse("hello").unwrap(),
+            vec![Segment::Literal("hello".into())]
+        );
     }
 
     #[test]
@@ -142,6 +145,9 @@ mod tests {
 
     #[test]
     fn empty_scheme() {
-        assert!(matches!(parse("${:FOO}"), Err(ConfigError::BadReference(_))));
+        assert!(matches!(
+            parse("${:FOO}"),
+            Err(ConfigError::BadReference(_))
+        ));
     }
 }
