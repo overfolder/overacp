@@ -2,6 +2,8 @@
 
 **Updated:** 2026-04-07
 
+
+
 ## Current milestone
 
 **0.1 — vendor `loop`** (in progress)
@@ -18,7 +20,7 @@ item at this stage. No protocol, server, or agent crates yet.
 | `overacp-compute-core` | Landed. `ComputeProvider` trait + node/exec/log types + `${provider:path:key}` config resolver (env + file). Bundled providers: `local-process` (`providers::local`). |
 | `overacp-protocol` | Not started. |
 | `overacp-agent` | Not started. |
-| `overacp-server` | Scaffolded. `SessionStore` trait + in-memory impl covering pools/nodes/agents/conversations/messages. REST surface for compute providers (§3.1) and pools (§3.2) at the root. Nodes (§3.3), agents (§3.4), and the SSE/cancel surfaces (§3.5) not yet implemented. |
+| `overacp-server` | Scaffolded. `SessionStore` trait + in-memory impl covering pools/nodes/agents/conversations/messages. REST surface for compute providers (§3.1), pools (§3.2), nodes (§3.3), and agents (§3.4) served at the root, plus the WebSocket tunnel + JSON-RPC dispatcher behind a static-JWT `Authenticator`. Pool runtimes are instantiated lazily on first agent create. SSE/cancel surfaces (§3.5) not yet implemented. |
 | `overacp-tools-mcp` | Not started. |
 | `examples/*` | Not started. |
 

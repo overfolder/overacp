@@ -6,7 +6,7 @@
 //! tunnel code. Per `docs/design/protocol.md` § 2.1, the wire `Claims`
 //! deliberately omit any tier/plan/entitlement field.
 
-use jsonwebtoken::{decode, DecodingKey, Validation};
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -32,6 +32,13 @@ pub enum AuthError {
 
 pub trait Authenticator: Send + Sync + 'static {
     fn validate(&self, token: &str) -> Result<Claims, AuthError>;
+    /// Mint a token for the given claims. Used by the agent
+    /// creation handler to hand out a fresh JWT scoped to a new
+    /// conversation.
+    fn issue(&self, claims: &Claims) -> Result<String, AuthError>;
+    /// Issuer string the authenticator stamps onto minted tokens
+    /// (also enforced on validation).
+    fn issuer(&self) -> &str;
 }
 
 pub struct StaticJwtAuthenticator {
@@ -60,12 +67,24 @@ impl Authenticator for StaticJwtAuthenticator {
         .map_err(|e| AuthError::Invalid(e.to_string()))?;
         Ok(data.claims)
     }
+
+    fn issue(&self, claims: &Claims) -> Result<String, AuthError> {
+        encode(
+            &Header::default(),
+            claims,
+            &EncodingKey::from_secret(self.signing_key.as_bytes()),
+        )
+        .map_err(|e| AuthError::Invalid(e.to_string()))
+    }
+
+    fn issuer(&self) -> &str {
+        &self.issuer
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jsonwebtoken::{encode, EncodingKey, Header};
 
     fn mint(key: &str, issuer: &str, conv: Uuid, exp: i64) -> String {
         let claims = Claims {
@@ -75,12 +94,27 @@ mod tests {
             exp,
             iss: issuer.to_string(),
         };
-        encode(
-            &Header::default(),
-            &claims,
-            &EncodingKey::from_secret(key.as_bytes()),
-        )
-        .unwrap()
+        StaticJwtAuthenticator::new(key, issuer)
+            .issue(&claims)
+            .unwrap()
+    }
+
+    #[test]
+    fn issue_then_validate_round_trips() {
+        let auth = StaticJwtAuthenticator::new("k", "overacp");
+        let conv = Uuid::new_v4();
+        let claims = Claims {
+            sub: Uuid::new_v4(),
+            user: Uuid::new_v4(),
+            conv,
+            exp: chrono::Utc::now().timestamp() + 60,
+            iss: "overacp".to_string(),
+        };
+        let token = auth.issue(&claims).unwrap();
+        let back = auth.validate(&token).unwrap();
+        assert_eq!(back.conv, conv);
+        assert_eq!(back.user, claims.user);
+        assert_eq!(back.sub, claims.sub);
     }
 
     #[test]

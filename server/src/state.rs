@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use overacp_compute_core::ComputeProvider;
+use overacp_compute_core::{ComputeProvider, ConfigResolver};
 
 use crate::api::ProviderRegistry;
 use crate::auth::Authenticator;
@@ -21,6 +21,10 @@ pub struct AppState {
     pub store: Arc<dyn SessionStore>,
     pub providers: Arc<ProviderRegistry>,
     pub pool_runtimes: Arc<PoolRuntimes>,
+    /// Resolver for `${...}` secret references in pool configs.
+    /// One process-lifetime instance shared across pools so the
+    /// `env`/`file`/... providers initialise just once.
+    pub resolver: Arc<ConfigResolver>,
     pub authenticator: Arc<dyn Authenticator>,
     pub sessions: SessionManager,
     pub stream_broker: Arc<StreamBroker>,
@@ -36,6 +40,7 @@ impl AppState {
             store,
             providers,
             pool_runtimes: Arc::new(RwLock::new(HashMap::new())),
+            resolver: Arc::new(ConfigResolver::with_defaults()),
             authenticator,
             sessions: new_session_manager(),
             stream_broker: StreamBroker::new(),
@@ -55,5 +60,29 @@ impl AppState {
 
     pub fn pool_runtime(&self, pool: &str) -> Option<Arc<dyn ComputeProvider>> {
         self.pool_runtimes.read().unwrap().get(pool).cloned()
+    }
+
+    /// Atomic "get or instantiate" for pool runtimes. Holds the
+    /// write lock across the existence check + insert so concurrent
+    /// callers can't both run `make()` and overwrite each other —
+    /// see the TOCTOU note in `agents::provider_for_pool`.
+    ///
+    /// `make` only runs if no entry exists yet for `pool`. If it
+    /// returns an error the map is left untouched.
+    pub fn pool_runtime_get_or_try_insert<F, E>(
+        &self,
+        pool: &str,
+        make: F,
+    ) -> Result<Arc<dyn ComputeProvider>, E>
+    where
+        F: FnOnce() -> Result<Arc<dyn ComputeProvider>, E>,
+    {
+        let mut guard = self.pool_runtimes.write().unwrap();
+        if let Some(existing) = guard.get(pool) {
+            return Ok(existing.clone());
+        }
+        let provider = make()?;
+        guard.insert(pool.to_owned(), provider.clone());
+        Ok(provider)
     }
 }
