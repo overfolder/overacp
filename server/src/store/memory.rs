@@ -66,7 +66,10 @@ impl SessionStore for InMemoryStore {
             content,
             created_at: Utc::now(),
         };
-        g.messages.entry(conversation_id).or_default().push(msg.clone());
+        g.messages
+            .entry(conversation_id)
+            .or_default()
+            .push(msg.clone());
         Ok(msg)
     }
 
@@ -76,7 +79,10 @@ impl SessionStore for InMemoryStore {
         since: Option<Uuid>,
     ) -> Result<Vec<Message>, StoreError> {
         let g = self.inner.read().await;
-        let all = g.messages.get(&conversation_id).ok_or(StoreError::NotFound)?;
+        let all = g
+            .messages
+            .get(&conversation_id)
+            .ok_or(StoreError::NotFound)?;
         let out = match since {
             None => all.clone(),
             Some(cursor) => {
@@ -93,7 +99,9 @@ impl SessionStore for InMemoryStore {
     async fn create_pool(&self, pool: ComputePool) -> Result<(), StoreError> {
         let mut g = self.inner.write().await;
         if g.pools.contains_key(&pool.name) {
-            return Err(StoreError::Conflict { what: format!("pool {}", pool.name) });
+            return Err(StoreError::Conflict {
+                what: format!("pool {}", pool.name),
+            });
         }
         g.pools.insert(pool.name.clone(), pool);
         Ok(())
@@ -162,7 +170,9 @@ impl SessionStore for InMemoryStore {
     async fn create_agent(&self, agent: Agent) -> Result<(), StoreError> {
         let mut g = self.inner.write().await;
         if g.agents.contains_key(&agent.id) {
-            return Err(StoreError::Conflict { what: format!("agent {}", agent.id) });
+            return Err(StoreError::Conflict {
+                what: format!("agent {}", agent.id),
+            });
         }
         g.agents.insert(agent.id.clone(), agent);
         Ok(())
