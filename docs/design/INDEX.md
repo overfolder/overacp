@@ -13,3 +13,7 @@ For the high-level architecture and milestone roadmap see
   JWT session claims, JSON-RPC method catalogue, shared payload types,
   schema-discipline rules, and the resolved naming policy. The
   `overacp-protocol` crate is the Rust expression of this document.
+- [`loop-tools.md`](./loop-tools.md) — how `overloop` discovers and
+  invokes tools across the four sources (built-in, supervisor-injected,
+  ACP-tunnelled, MCP-direct). Drives the `0.3.x` migration in
+  [`TODO.md`](../../TODO.md).
