@@ -2,7 +2,8 @@ use std::error::Error as StdError;
 use std::sync::Arc;
 
 use axum::{routing::get, Router};
-use overacp_server::{AppState, InMemoryStore};
+use overacp_server::api::default_registry;
+use overacp_server::{compute_router, AppState, InMemoryStore};
 use tokio::net::TcpListener;
 use tracing_subscriber::fmt;
 
@@ -10,9 +11,10 @@ use tracing_subscriber::fmt;
 async fn main() -> Result<(), Box<dyn StdError>> {
     fmt::init();
 
-    let state = AppState::new(Arc::new(InMemoryStore::new()));
+    let state = AppState::new(Arc::new(InMemoryStore::new()), Arc::new(default_registry()));
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .merge(compute_router())
         .with_state(state);
 
     let listener = TcpListener::bind("0.0.0.0:8080").await?;
