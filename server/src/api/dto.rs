@@ -1,4 +1,4 @@
-//! Wire DTOs for the `/api/v1/compute/{providers,pools}` surface.
+//! Wire DTOs for the `/compute/{providers,pools}` surface.
 //!
 //! These are the JSON shapes documented in
 //! `docs/design/controlplane.md` § 3.1–3.2. They live separately

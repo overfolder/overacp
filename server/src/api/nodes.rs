@@ -1,4 +1,4 @@
-//! axum routes for `/api/v1/compute/pools/{pool}/nodes`.
+//! axum routes for `/compute/pools/{pool}/nodes`.
 //!
 //! Implements `docs/design/controlplane.md` § 3.3. Each handler
 //! resolves the named pool to a live `ComputeProvider` via
@@ -27,17 +27,14 @@ use crate::state::AppState;
 /// alongside the `compute_router()` providers/pools surface.
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/compute/pools/:pool/nodes", get(list_nodes))
+        .route("/compute/pools/:pool/nodes", get(list_nodes))
         .route(
-            "/api/v1/compute/pools/:pool/nodes/:node_id",
+            "/compute/pools/:pool/nodes/:node_id",
             get(describe_node).delete(delete_node),
         )
+        .route("/compute/pools/:pool/nodes/:node_id/exec", post(exec_node))
         .route(
-            "/api/v1/compute/pools/:pool/nodes/:node_id/exec",
-            post(exec_node),
-        )
-        .route(
-            "/api/v1/compute/pools/:pool/nodes/:node_id/logs",
+            "/compute/pools/:pool/nodes/:node_id/logs",
             get(stream_node_logs),
         )
 }
