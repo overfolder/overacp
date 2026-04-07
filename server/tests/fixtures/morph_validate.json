@@ -1,0 +1,8 @@
+{
+  "config": {
+    "provider.class": "morph",
+    "morph.api_key": "${env:MORPH_API_KEY}",
+    "default.image": "ghcr.io/overfolder/overacp-agent:latest",
+    "max_nodes": "10"
+  }
+}
