@@ -89,7 +89,13 @@ async fn create_agent(
         exp: (Utc::now() + Duration::hours(AGENT_JWT_TTL_HOURS)).timestamp(),
         iss: state.authenticator.issuer().to_string(),
     };
-    let jwt = state.authenticator.issue(&claims)?;
+    let jwt = match state.authenticator.issue(&claims) {
+        Ok(j) => j,
+        Err(e) => {
+            let _ = state.store.delete_conversation(conversation.id).await;
+            return Err(e.into());
+        }
+    };
 
     let spec = NodeSpec {
         image: image.clone(),
@@ -101,7 +107,13 @@ async fn create_agent(
         provider_overrides: Map::new(),
     };
 
-    let handle = provider.create_node(spec).await?;
+    let handle = match provider.create_node(spec).await {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = state.store.delete_conversation(conversation.id).await;
+            return Err(e.into());
+        }
+    };
 
     if let Err(e) = state
         .store
@@ -115,10 +127,10 @@ async fn create_agent(
         })
         .await
     {
-        // Roll back the live node so a failed metadata insert
-        // doesn't leak compute. Mirrors the rollback for the
-        // `create_agent` insert below.
+        // Roll back the live node + conversation so a failed
+        // metadata insert doesn't leak compute or store rows.
         let _ = provider.delete_node(&handle.id).await;
+        let _ = state.store.delete_conversation(conversation.id).await;
         return Err(e.into());
     }
 
@@ -136,9 +148,10 @@ async fn create_agent(
 
     if let Err(e) = state.store.create_agent(agent.clone()).await {
         // Best-effort rollback so a failed agent insert doesn't
-        // leak a live node.
+        // leak a live node, a node row, or a conversation row.
         let _ = provider.delete_node(&handle.id).await;
         let _ = state.store.mark_node_deleted(&handle.id.0).await;
+        let _ = state.store.delete_conversation(conversation.id).await;
         return Err(e.into());
     }
 

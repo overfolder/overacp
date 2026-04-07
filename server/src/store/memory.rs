@@ -49,6 +49,13 @@ impl SessionStore for InMemoryStore {
         Ok(self.inner.read().await.conversations.get(&id).cloned())
     }
 
+    async fn delete_conversation(&self, id: Uuid) -> Result<(), StoreError> {
+        let mut g = self.inner.write().await;
+        g.conversations.remove(&id);
+        g.messages.remove(&id);
+        Ok(())
+    }
+
     async fn append_message(
         &self,
         conversation_id: Uuid,

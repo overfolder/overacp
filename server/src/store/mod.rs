@@ -27,6 +27,9 @@ pub trait SessionStore: Send + Sync + 'static {
     // conversations
     async fn create_conversation(&self, user: &str) -> Result<Conversation, StoreError>;
     async fn get_conversation(&self, id: Uuid) -> Result<Option<Conversation>, StoreError>;
+    /// Delete a conversation (and any messages attached to it).
+    /// Idempotent: deleting an unknown id is `Ok(())`.
+    async fn delete_conversation(&self, id: Uuid) -> Result<(), StoreError>;
 
     // messages
     async fn append_message(
