@@ -8,9 +8,7 @@ use axum::http::{Request, StatusCode};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use overacp_server::api::default_registry;
-use overacp_server::{
-    router, AppState, HtpasswdFile, InMemoryStore, StaticJwtAuthenticator,
-};
+use overacp_server::{router, AppState, HtpasswdFile, InMemoryStore, StaticJwtAuthenticator};
 use tower::ServiceExt;
 
 fn auth_header(user: &str, pass: &str) -> String {

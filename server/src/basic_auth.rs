@@ -104,7 +104,9 @@ struct BasicCreds {
 
 fn parse_basic_header(headers: &HeaderMap) -> Option<BasicCreds> {
     let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let b64 = raw.strip_prefix("Basic ").or_else(|| raw.strip_prefix("basic "))?;
+    let b64 = raw
+        .strip_prefix("Basic ")
+        .or_else(|| raw.strip_prefix("basic "))?;
     let decoded = BASE64.decode(b64.trim()).ok()?;
     let s = String::from_utf8(decoded).ok()?;
     let (user, pass) = s.split_once(':')?;

@@ -31,9 +31,8 @@ async fn main() -> Result<(), Box<dyn StdError>> {
     // loud failure mode rather than open-by-default.
     match env::var("OVERACP_BASIC_AUTH_FILE") {
         Ok(path) if !path.is_empty() => {
-            let file = HtpasswdFile::load(&PathBuf::from(&path)).map_err(|e| {
-                format!("failed to load OVERACP_BASIC_AUTH_FILE='{path}': {e}")
-            })?;
+            let file = HtpasswdFile::load(&PathBuf::from(&path))
+                .map_err(|e| format!("failed to load OVERACP_BASIC_AUTH_FILE='{path}': {e}"))?;
             tracing::info!(
                 users = file.user_count(),
                 path = %path,
