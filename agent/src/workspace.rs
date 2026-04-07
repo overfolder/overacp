@@ -1,9 +1,9 @@
 //! Pluggable workspace synchronization.
 //!
-//! 0.3 ships only `NoopSync`. Real implementations (GCS, rclone,
-//! S3, ...) belong in separate crates per the SPEC.md "Open
-//! questions" entry — the trait exists here so the supervisor can
-//! call into them without growing per-backend dependencies.
+//! Real synchronizer implementations (GCS, rclone, S3, ...) belong
+//! in separate crates so this crate doesn't grow per-backend
+//! dependencies. The trait lives here so the supervisor can call
+//! into any of them through a single uniform interface.
 
 use anyhow::Result;
 

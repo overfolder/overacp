@@ -1,12 +1,9 @@
 //! Pluggable adapter for the child agent process.
 //!
 //! `AgentAdapter` lets the supervisor host any binary that speaks
-//! over/ACP on stdio — the reference `overloop`, or (in future
-//! milestones) third-party harnesses such as Claude Code or Codex via
-//! their existing ACP bridges.
-//!
-//! 0.3 ships only `LoopAdapter`. Other adapters will be added as
-//! separate impls in later milestones; the trait exists now so the
+//! over/ACP on stdio — the reference `overloop`, or third-party
+//! harnesses such as Claude Code or Codex via their existing ACP
+//! bridges. Each harness is a separate `AgentAdapter` impl so the
 //! supervisor never needs to special-case the child binary.
 
 use std::ffi::OsString;
