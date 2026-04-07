@@ -164,12 +164,9 @@ mod tests {
             .expect("list_nodes");
         assert!(list.iter().any(|h| h.id.0 == id));
 
-        let Json(desc) = describe_node(
-            State(state.clone()),
-            Path(("pool-a".into(), id.clone())),
-        )
-        .await
-        .expect("describe_node");
+        let Json(desc) = describe_node(State(state.clone()), Path(("pool-a".into(), id.clone())))
+            .await
+            .expect("describe_node");
         assert_eq!(desc.handle.id.0, id);
 
         let status = delete_node(State(state.clone()), Path(("pool-a".into(), id.clone())))

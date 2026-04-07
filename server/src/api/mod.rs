@@ -25,9 +25,9 @@ pub use dto::{
     ProvidersList, ValidationFieldError, ValidationResult,
 };
 pub use error::ApiError;
+pub use nodes::router as compute_nodes_router;
 pub use pool_config::{is_secret_ref, PoolConfig, PoolConfigParseError, PROVIDER_CLASS_KEY};
 pub use providers::{
     default_registry, LocalProcessPlugin, MorphPlugin, ProviderPlugin, ProviderRegistry,
 };
-pub use nodes::router as compute_nodes_router;
 pub use routes::router as compute_router;
