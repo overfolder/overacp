@@ -15,7 +15,7 @@ item at this stage. No protocol, server, or agent crates yet.
 | Crate | State |
 |---|---|
 | `overloop` | Vendored, builds. Reference agent. |
-| `overacp-compute-core` | Landed. `ComputeProvider` trait + node/exec/log types + `${provider:path:key}` config resolver (env + file). |
+| `overacp-compute-core` | Landed. `ComputeProvider` trait + node/exec/log types + `${provider:path:key}` config resolver (env + file). Bundled providers: `local-process` (`providers::local`). |
 | `overacp-protocol` | Not started. |
 | `overacp-agent` | Not started. |
 | `overacp-server` | Scaffolded. `SessionStore` trait + in-memory impl covering pools/nodes/agents/conversations/messages. REST surface for compute providers (§3.1) and pools (§3.2) under `/api/v1`. Nodes (§3.3), agents (§3.4), and the SSE/cancel surfaces (§3.5) not yet implemented. |
