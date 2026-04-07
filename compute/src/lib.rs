@@ -8,6 +8,7 @@ pub mod exec;
 pub mod logs;
 pub mod node;
 pub mod provider;
+pub mod providers;
 
 pub use config::{
     ConfigProvider, ConfigResolver, EnvConfigProvider, FileConfigProvider, RawConfig,
