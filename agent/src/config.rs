@@ -54,7 +54,10 @@ pub enum ConfigError {
         source: uuid::Error,
     },
     /// `OVERACP_RECONNECT_BACKOFF_MS` was not a positive integer.
-    #[error("`{}` must be a positive integer in milliseconds", ENV_RECONNECT_BACKOFF_MS)]
+    #[error(
+        "`{}` must be a positive integer in milliseconds",
+        ENV_RECONNECT_BACKOFF_MS
+    )]
     InvalidBackoff,
 }
 
