@@ -402,6 +402,12 @@ mod tests {
     }
 
     #[test]
+    fn capability_flags_match_design_doc_defaults() {
+        assert!(!LocalProvider::supports_multi_agent_nodes());
+        assert!(!LocalProvider::supports_node_reuse());
+    }
+
+    #[test]
     fn validate_config_rejects_non_string() {
         let mut cfg = Map::new();
         cfg.insert("local.agent_binary".into(), json!(42));
