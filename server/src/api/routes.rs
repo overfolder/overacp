@@ -19,11 +19,11 @@ use serde_json::Value;
 
 use crate::api::dto::{
     CreatePoolRequest, PoolConfigBody, PoolStatusResponse, PoolSummary, PoolView, ProviderInfo,
-    ProvidersList, ValidationResult,
+    ProvidersList, ValidationFieldError, ValidationResult,
 };
 use crate::api::error::ApiError;
 use crate::api::pool_config::PoolConfig;
-use crate::api::providers::ProviderRegistry;
+use crate::api::providers::{ProviderPlugin, ProviderRegistry};
 use crate::state::AppState;
 use crate::store::{ComputePool, PoolStatus};
 
@@ -94,7 +94,8 @@ async fn validate_provider_config(
             config.provider_class()
         )));
     }
-    let errors = plugin.validate(&config);
+    let mut errors = plugin.validate(&config);
+    errors.extend(check_capability_flags(plugin, &config));
     Ok(Json(ValidationResult {
         provider_type,
         valid: errors.is_empty(),
@@ -254,7 +255,8 @@ fn accept_or_reject(
     let plugin = registry
         .get(provider_type)
         .ok_or_else(|| ApiError::BadRequest(format!("unknown provider.class '{provider_type}'")))?;
-    let errors = plugin.validate(config);
+    let mut errors = plugin.validate(config);
+    errors.extend(check_capability_flags(plugin, config));
     if errors.is_empty() {
         Ok(())
     } else {
@@ -263,6 +265,63 @@ fn accept_or_reject(
             valid: false,
             errors,
         }))
+    }
+}
+
+/// Capability gating for the two well-known boolean keys steered
+/// by the controlplane itself (design doc § 3.2.1):
+///
+/// - `multi_agent_nodes`
+/// - `node_reuse`
+///
+/// Both default to the provider's advertised capability. A pool
+/// may only *restrict* a flag relative to its provider — enabling
+/// a flag the provider does not support is rejected with a
+/// structured field error pointing at the offending key. The
+/// caller maps a non-empty error list to 422.
+fn check_capability_flags(
+    plugin: &dyn ProviderPlugin,
+    config: &PoolConfig,
+) -> Vec<ValidationFieldError> {
+    let info = plugin.info();
+    let mut errors = Vec::new();
+    check_capability_flag(
+        config,
+        "multi_agent_nodes",
+        info.supports_multi_agent_nodes,
+        &mut errors,
+    );
+    check_capability_flag(config, "node_reuse", info.supports_node_reuse, &mut errors);
+    errors
+}
+
+fn check_capability_flag(
+    config: &PoolConfig,
+    key: &str,
+    provider_supports: bool,
+    errors: &mut Vec<ValidationFieldError>,
+) {
+    let Some(raw) = config.get(key) else {
+        return;
+    };
+    match raw {
+        "true" => {
+            if !provider_supports {
+                errors.push(ValidationFieldError {
+                    key: key.to_string(),
+                    messages: vec![format!(
+                        "provider '{}' does not support '{key}=true'; \
+                         this flag may only be set to a value the provider supports",
+                        config.provider_class()
+                    )],
+                });
+            }
+        }
+        "false" => {}
+        other => errors.push(ValidationFieldError {
+            key: key.to_string(),
+            messages: vec![format!("expected 'true' or 'false', got '{other}'")],
+        }),
     }
 }
 
