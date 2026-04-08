@@ -89,13 +89,10 @@ impl ComputeProvider for LocalProvider {
         PROVIDER_TYPE
     }
 
-    fn supports_multi_agent_nodes() -> bool {
-        false
-    }
-
-    fn supports_node_reuse() -> bool {
-        false
-    }
+    // `supports_multi_agent_nodes` and `supports_node_reuse` use the
+    // trait defaults (`false`/`false`) — see `docs/design/controlplane.md`
+    // § 4. The `capability_flags_match_design_doc_defaults` test pins the
+    // values so a future change here is intentional.
 
     fn from_config(config: ResolvedConfig) -> Result<Self, ProviderError> {
         let agent_binary = config
