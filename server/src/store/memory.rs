@@ -248,14 +248,22 @@ impl SessionStore for InMemoryStore {
             Some(id) => (id, false),
             None => {
                 let fresh = factory();
-                assert_eq!(
-                    fresh.pool_name, pool_name,
-                    "factory minted a node for the wrong pool"
-                );
-                assert_eq!(
-                    fresh.agent_refcount, 0,
-                    "factory must mint nodes with agent_refcount = 0"
-                );
+                if fresh.pool_name != pool_name {
+                    return Err(StoreError::Conflict {
+                        what: format!(
+                            "factory minted node for pool {} (expected {pool_name})",
+                            fresh.pool_name
+                        ),
+                    });
+                }
+                if fresh.agent_refcount != 0 {
+                    return Err(StoreError::Conflict {
+                        what: format!(
+                            "factory minted node {} with refcount {} (expected 0)",
+                            fresh.node_id, fresh.agent_refcount
+                        ),
+                    });
+                }
                 let id = fresh.node_id.clone();
                 if g.nodes.contains_key(&id) {
                     return Err(StoreError::Conflict {
