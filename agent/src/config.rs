@@ -53,6 +53,13 @@ pub enum ConfigError {
         #[source]
         source: uuid::Error,
     },
+    /// Failed to read the launch CWD when `OVERACP_WORKSPACE_DIR` was unset.
+    #[error("failed to read launch working directory: {source}")]
+    Cwd {
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
     /// `OVERACP_RECONNECT_BACKOFF_MS` was not a positive integer.
     #[error(
         "`{}` must be a positive integer in milliseconds",
@@ -133,7 +140,7 @@ impl BootConfig {
             Some(v) if !v.is_empty() => PathBuf::from(v),
             _ => env
                 .current_dir()
-                .map_err(|_| ConfigError::MissingRequired("<launch cwd>"))?,
+                .map_err(|source| ConfigError::Cwd { source })?,
         };
 
         let reconnect_backoff_ms = match optional(env, ENV_RECONNECT_BACKOFF_MS)? {
