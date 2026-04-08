@@ -89,6 +89,14 @@ impl ComputeProvider for LocalProvider {
         PROVIDER_TYPE
     }
 
+    fn supports_multi_agent_nodes() -> bool {
+        false
+    }
+
+    fn supports_node_reuse() -> bool {
+        false
+    }
+
     fn from_config(config: ResolvedConfig) -> Result<Self, ProviderError> {
         let agent_binary = config
             .get("local.agent_binary")

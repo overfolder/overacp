@@ -72,6 +72,14 @@ async fn describes_a_single_provider_and_404s_for_unknown() {
     assert_eq!(status, StatusCode::OK);
     let info: ProviderInfo = parse(&body);
     assert_eq!(info.provider_type, "morph");
+    assert!(!info.supports_multi_agent_nodes);
+    assert!(info.supports_node_reuse);
+
+    let (status, body) = send(&app, "GET", "/compute/providers/local-process", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let local: ProviderInfo = parse(&body);
+    assert!(!local.supports_multi_agent_nodes);
+    assert!(!local.supports_node_reuse);
 
     let (status, _) = send(&app, "GET", "/compute/providers/nope", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);

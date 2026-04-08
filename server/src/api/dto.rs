@@ -17,6 +17,10 @@ pub struct ProviderInfo {
     pub provider_type: String,
     pub display_name: String,
     pub version: String,
+    /// Capability flag — see `docs/design/controlplane.md` § 4.
+    pub supports_multi_agent_nodes: bool,
+    /// Capability flag — see `docs/design/controlplane.md` § 4.
+    pub supports_node_reuse: bool,
 }
 
 /// `GET /compute/providers`.
