@@ -358,6 +358,120 @@ async fn pause_resume_updates_status() {
     assert_eq!(pool.status, PoolStatus::Active);
 }
 
+// ── § 3.2.1 — capability flags (multi_agent_nodes, node_reuse) ───
+
+/// Helper: minimal valid morph create body with extra capability keys.
+fn morph_create_with(extra: serde_json::Map<String, Value>) -> String {
+    let mut config = serde_json::Map::new();
+    config.insert("provider.class".into(), json!("morph"));
+    config.insert("morph.api_key".into(), json!("${env:K}"));
+    config.insert("default.image".into(), json!("img"));
+    for (k, v) in extra {
+        config.insert(k, v);
+    }
+    json!({ "name": "morph-prod", "config": config }).to_string()
+}
+
+fn local_create_with(extra: serde_json::Map<String, Value>) -> String {
+    let mut config = serde_json::Map::new();
+    config.insert("provider.class".into(), json!("local-process"));
+    for (k, v) in extra {
+        config.insert(k, v);
+    }
+    json!({ "name": "lp", "config": config }).to_string()
+}
+
+#[tokio::test]
+async fn create_pool_defaults_capability_flags_to_provider_support() {
+    // Neither key set → falls through to provider defaults, must succeed.
+    let app = app();
+    let body = morph_create_with(serde_json::Map::new());
+    let (status, body) = send(&app, "POST", "/compute/pools", Some(&body)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "body: {}",
+        String::from_utf8_lossy(&body)
+    );
+}
+
+#[tokio::test]
+async fn create_pool_accepts_restricting_a_supported_flag_to_false() {
+    // morph supports node_reuse=true; restricting to false is allowed.
+    let app = app();
+    let mut extra = serde_json::Map::new();
+    extra.insert("node_reuse".into(), json!("false"));
+    extra.insert("multi_agent_nodes".into(), json!("false"));
+    let body = morph_create_with(extra);
+    let (status, body) = send(&app, "POST", "/compute/pools", Some(&body)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "body: {}",
+        String::from_utf8_lossy(&body)
+    );
+}
+
+#[tokio::test]
+async fn create_pool_accepts_enabling_a_flag_the_provider_supports() {
+    // morph supports node_reuse=true.
+    let app = app();
+    let mut extra = serde_json::Map::new();
+    extra.insert("node_reuse".into(), json!("true"));
+    let body = morph_create_with(extra);
+    let (status, _) = send(&app, "POST", "/compute/pools", Some(&body)).await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn create_pool_rejects_enabling_multi_agent_nodes_when_unsupported() {
+    // morph does NOT advertise multi_agent_nodes → 422.
+    let app = app();
+    let mut extra = serde_json::Map::new();
+    extra.insert("multi_agent_nodes".into(), json!("true"));
+    let body = morph_create_with(extra);
+    let (status, body) = send(&app, "POST", "/compute/pools", Some(&body)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let result: ValidationResult = parse(&body);
+    assert!(!result.valid);
+    let offending: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| e.key == "multi_agent_nodes")
+        .collect();
+    assert_eq!(
+        offending.len(),
+        1,
+        "expected one error keyed at multi_agent_nodes, got {:?}",
+        result.errors
+    );
+}
+
+#[tokio::test]
+async fn create_pool_rejects_enabling_node_reuse_when_unsupported() {
+    // local-process advertises neither flag → enabling node_reuse is 422.
+    let app = app();
+    let mut extra = serde_json::Map::new();
+    extra.insert("node_reuse".into(), json!("true"));
+    let body = local_create_with(extra);
+    let (status, body) = send(&app, "POST", "/compute/pools", Some(&body)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let result: ValidationResult = parse(&body);
+    assert!(result.errors.iter().any(|e| e.key == "node_reuse"));
+}
+
+#[tokio::test]
+async fn create_pool_accepts_reserved_unenforced_keys() {
+    // max_nodes and idle_ttl_s are reserved-but-unenforced in 0.4.
+    let app = app();
+    let mut extra = serde_json::Map::new();
+    extra.insert("max_nodes".into(), json!("50"));
+    extra.insert("idle_ttl_s".into(), json!("1800"));
+    let body = morph_create_with(extra);
+    let (status, _) = send(&app, "POST", "/compute/pools", Some(&body)).await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
 #[tokio::test]
 async fn delete_pool_removes_it() {
     let app = app();
