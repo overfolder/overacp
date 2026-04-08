@@ -243,9 +243,20 @@ impl SessionStore for InMemoryStore {
             .cloned()
             .collect();
 
-        // 4. Pick or create.
+        // 4. Pick or create. The picker is caller-supplied and may
+        //    misbehave; validate that the returned id is one we
+        //    actually offered, otherwise a buggy picker could attach
+        //    an agent to a node from a different pool and corrupt
+        //    refcounts in `release_node_for_agent`.
         let (chosen_id, created) = match picker(&candidates) {
-            Some(id) => (id, false),
+            Some(id) => {
+                if !candidates.iter().any(|n| n.node_id == id) {
+                    return Err(StoreError::Conflict {
+                        what: format!("picker returned node {id} not in pool {pool_name}"),
+                    });
+                }
+                (id, false)
+            }
             None => {
                 let fresh = factory();
                 if fresh.pool_name != pool_name {
