@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# overacp pre-commit hook — mirrors the CI gates locally.
+#
+# One-time install (per clone):
+#   git config core.hooksPath .githooks
+#
+# Skip (escape hatch — does not bypass CI):
+#   OVERACP_SKIP_HOOKS=1 git commit ...
+
+set -euo pipefail
+
+if [[ "${OVERACP_SKIP_HOOKS:-0}" == "1" ]]; then
+    echo "pre-commit: OVERACP_SKIP_HOOKS=1, skipping checks"
+    exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+step() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
+fail() { printf '\n\033[1;31mpre-commit failed: %s\033[0m\n' "$*" >&2; exit 1; }
+
+step "cargo fmt --all -- --check"
+cargo fmt --all -- --check || fail "formatting issues (run: cargo fmt --all)"
+
+step "cargo clippy --workspace --all-targets --all-features -- -D warnings"
+cargo clippy --workspace --all-targets --all-features -- -D warnings \
+    || fail "clippy warnings"
+
+if cargo nextest --version >/dev/null 2>&1; then
+    step "cargo nextest run --workspace --all-features"
+    cargo nextest run --workspace --all-features || fail "tests failed"
+else
+    step "cargo test --workspace --all-features (nextest not installed)"
+    cargo test --workspace --all-features || fail "tests failed"
+fi
+
+printf '\n\033[1;32mpre-commit: all checks passed\033[0m\n'
