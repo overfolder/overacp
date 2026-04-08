@@ -99,3 +99,23 @@ impl IntoResponse for ApiError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt;
+
+    #[tokio::test]
+    async fn unauthorized_sets_status_and_www_authenticate() {
+        let resp = ApiError::Unauthorized("nope".into()).into_response();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            resp.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+            "Basic realm=\"overacp\""
+        );
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "unauthorized");
+        assert_eq!(v["message"], "nope");
+    }
+}
