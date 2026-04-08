@@ -1,3 +1,7 @@
+mod startup;
+
+pub use startup::{build_state_from_env, StartupError};
+
 pub mod api;
 pub mod auth;
 pub mod basic_auth;
