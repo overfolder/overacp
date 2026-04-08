@@ -1147,6 +1147,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "overacp-agent"
+version = "0.1.0"
+dependencies = [
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
 name = "overacp-compute-core"
 version = "0.1.0"
 dependencies = [
