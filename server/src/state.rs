@@ -80,3 +80,28 @@ impl AppState {
         self.pool_runtimes.read().unwrap().get(pool).cloned()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::default_registry;
+    use crate::auth::StaticJwtAuthenticator;
+    use crate::store::InMemoryStore;
+
+    fn base() -> AppState {
+        AppState::new(
+            Arc::new(InMemoryStore::new()),
+            Arc::new(default_registry()),
+            Arc::new(StaticJwtAuthenticator::new("k", "overacp")),
+        )
+    }
+
+    #[test]
+    fn with_default_user_id_sets_field() {
+        let state = base();
+        assert!(state.default_user_id.is_none());
+        let uid = Uuid::new_v4();
+        let state = state.with_default_user_id(uid);
+        assert_eq!(state.default_user_id, Some(uid));
+    }
+}

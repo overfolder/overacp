@@ -193,6 +193,31 @@ mod tests {
     }
 
     #[test]
+    fn rejects_empty_user_or_hash() {
+        let err = HtpasswdFile::parse(":onlyhash\n").unwrap_err();
+        assert!(matches!(err, HtpasswdError::Malformed { line: 1 }));
+        let err = HtpasswdFile::parse("onlyuser:\n").unwrap_err();
+        assert!(matches!(err, HtpasswdError::Malformed { line: 1 }));
+    }
+
+    #[test]
+    fn load_reads_from_file() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("overacp-htpasswd-test-{}.txt", std::process::id()));
+        std::fs::write(&path, sample_file()).unwrap();
+        let f = HtpasswdFile::load(&path).unwrap();
+        assert!(f.verify("alice", "hunter2"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_propagates_io_error_for_missing_file() {
+        let path = std::env::temp_dir().join("overacp-htpasswd-does-not-exist-xyz");
+        let err = HtpasswdFile::load(&path).unwrap_err();
+        assert!(matches!(err, HtpasswdError::Io(_)));
+    }
+
+    #[test]
     fn parses_basic_header_roundtrip() {
         let mut h = HeaderMap::new();
         let token = BASE64.encode("alice:hunter2");
