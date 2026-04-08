@@ -1,3 +1,7 @@
+---
+status: Active
+---
+
 # Workspace sync
 
 How the working directory of an agent session is hydrated before the

@@ -124,6 +124,18 @@ Overfolder's `controlplane` becomes a thin shim crate that depends on
 `overacp-server` and plugs in Overfolder-specific implementations of the
 traits.
 
+## Documentation rule
+
+`SPEC.md` is the index. It must describe **everything** about the
+system at least at a paragraph level and link into
+[`docs/design/`](./docs/design) for the details. Every design doc
+under `docs/design/` carries a `status:` frontmatter field —
+`Active`, `Superseded`, or `Rejected` — and **no `Active` design
+doc section may be unreferenced from `SPEC.md`**. If you add a new
+design doc or a new section in an existing one, add (or update) the
+SPEC link in the same change. If you supersede a design, flip the
+frontmatter and drop the SPEC link in the same change.
+
 ## Roadmap
 
 The roadmap is shaped around standing up a controlplane that owns
@@ -140,17 +152,55 @@ prep, everything after it is filling in providers and demos.
 4. **0.3.x — `overloop` migration** — make the reference agent
    protocol-conformant: depend on `overacp-protocol`, fix the
    `session/message → poll/newMessages` flow, emit `stream/toolCall`
-   and `stream/toolResult`, unify the four tool sources per
-   [`docs/design/loop-tools.md`](./docs/design/loop-tools.md).
+   and `stream/toolResult`, unify the four tool sources (built-in,
+   supervisor-injected, ACP-tunnelled, MCP-direct).
 5. **0.4 — `overacp-server`: compute-pool controlplane** — the
-   centerpiece. REST API for compute pools, compute nodes, and
-   agents (Kafka-Connect-shaped); the `ComputeProvider` trait;
-   in-memory + SQLite persistence; the existing tunnel/dispatcher/LLM
-   proxy carried over; `SessionStore`, `QuotaPolicy`, `ToolHost`,
-   `Authenticator` traits; secret references in pool configs;
-   `overacp-compute-local` ships in the same milestone so the demo
-   works without infra. Full design in
-   [`docs/design/controlplane.md`](./docs/design/controlplane.md).
+   centerpiece. The acceptance gate for this milestone is a single
+   end-to-end test (`server/tests/acceptance_0_4.rs`) that creates a
+   `local-process` pool, creates an agent on it, sends a message,
+   subscribes to the SSE stream, asserts a `stream/textDelta` arrives,
+   `exec`s on the spawned node, and confirms the node is destroyed
+   on `DELETE /agents/{id}`. To make that test pass we land:
+
+   - REST API for compute pools, compute nodes, and agents per
+     [`docs/design/controlplane.md`](./docs/design/controlplane.md)
+     § 3 (Kafka-Connect-shaped, served at the root, no `/api/v{n}`).
+   - The `ComputeProvider` trait per § 4, including the
+     `supports_multi_agent_nodes` / `supports_node_reuse` capability
+     methods and the provider defaults table. `overacp-compute-local`
+     ships in the same milestone so the demo and acceptance test work
+     without infra.
+   - Pool config gains the `multi_agent_nodes` / `node_reuse` keys
+     (§ 3.2.1). A pool may only restrict the provider's capability;
+     attempting to enable a flag the provider does not support
+     returns `422` from `POST /compute/pools`.
+   - Agent lifecycle and refcounting per § 3.4.3: an
+     `agent_refcount` column on `compute_nodes`, mutated
+     transactionally with `agents` rows; `POST /agents` decides
+     reuse-vs-create from the pool's flags + the live refcount;
+     `DELETE /agents/{id}` decrements and (when
+     `node_reuse = false`) destroys the node.
+   - Pool runtime rehydration per § 6.1: every `compute_pools` row
+     is reconstructed at startup before the listener binds; create
+     is synchronous; failures park the row in `errored` state.
+     0.4 ships with the in-memory `SessionStore` only.
+   - Agent supervisor boot contract per
+     [`docs/design/protocol.md`](./docs/design/protocol.md) § 2.4:
+     `OVERACP_*` environment variables only, agent JWTs minted with
+     a 30-day TTL, providers forward extra `NodeSpec.env` verbatim.
+   - Streaming scope is intentionally narrow: one-shot
+     `POST /compute/pools/{pool}/nodes/{id}/exec`, and
+     non-streaming completions emitting one `stream/textDelta`
+     followed by a turn terminator. Streaming exec and streaming
+     completions are non-breaking future work.
+   - The existing tunnel/dispatcher/LLM proxy carried over;
+     `SessionStore`, `QuotaPolicy`, `ToolHost`, and `Authenticator`
+     traits; secret references in pool configs.
+
+   Out of 0.4 (tracked in [`TODO.md`](./TODO.md) as 0.4 non-blockers):
+   JWT rotation, SQLite `SessionStore`, the idle reaper for reusable
+   nodes, `max_nodes` / `idle_ttl_s` enforcement, streaming exec, and
+   streaming completions.
 6. **0.5 — production providers + demo** —
    `overacp-compute-docker`, `overacp-compute-morph`,
    `overacp-workspace-gcs`, `overacp-workspace-s3`. End-to-end demo:
@@ -194,8 +244,7 @@ position.
      that should not round-trip through the controlplane.
 
   Tool names are namespaced per source (`builtin/`, `injected/`,
-  `acp/`, `mcp/<server>/`). Full design in
-  [`docs/design/loop-tools.md`](./docs/design/loop-tools.md).
+  `acp/`, `mcp/<server>/`).
 - **Workspace sync.** Belongs to the agent supervisor, not the
   controlplane. Shipped as a per-backend crate (`overacp-workspace-gcs`,
   `overacp-workspace-s3`, `overacp-workspace-rclone`, ...) implementing

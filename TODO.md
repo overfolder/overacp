@@ -41,9 +41,7 @@ Tracks concrete next steps. High-level roadmap lives in
 ## 0.3.x — `overloop` migration to the protocol crate
 
 Tracked separately because the gaps surfaced after the protocol
-crate landed. Full design in
-[`docs/design/loop-tools.md`](./docs/design/loop-tools.md). All items
-block calling the loop "protocol-conformant".
+crate landed. All items block calling the loop "protocol-conformant".
 
 - [ ] Loop depends on `overacp-protocol` and consumes its method-name
       constants instead of hard-coding strings in `loop/src/acp.rs`.
@@ -153,6 +151,30 @@ listed in full in `docs/design/controlplane.md` § 3.
       `GET /agents/{id}/stream` produces a `stream/textDelta`.
 - [ ] Round-trip tests for every REST endpoint against captured
       JSON fixtures.
+
+### 0.4 non-blockers (deferred, do not gate the milestone)
+
+These were ratified out of the 0.4 acceptance gate and tracked here
+so they don't get lost. None of them block the
+`server/tests/acceptance_0_4.rs` end-to-end test.
+
+- [ ] Agent JWT rotation strategy. 0.4 mints once with a 30-day TTL
+      per `docs/design/protocol.md` § 2.4 and never refreshes.
+- [ ] SQLite `SessionStore` impl + migration story. 0.4 ships
+      in-memory only; pool runtime rehydration
+      (`docs/design/controlplane.md` § 6.1) is the contract that
+      will make the SQLite swap a non-event.
+- [ ] Idle reaper for reusable nodes (`node_reuse = true` pools).
+      0.4 leaves a detached node in place forever; the reaper is
+      what eventually collects it.
+- [ ] `max_nodes` and `idle_ttl_s` pool config keys are reserved in
+      `docs/design/controlplane.md` § 3.2.1 but not enforced in 0.4.
+- [ ] Streaming `POST /compute/pools/{pool}/nodes/{id}/exec`
+      (probably an SSE sibling endpoint, must stay non-breaking
+      with the one-shot path).
+- [ ] Streaming completions (multiple `stream/textDelta` per turn,
+      proper turn terminator framing). 0.4 only emits a single
+      `stream/textDelta` + terminator.
 
 ## 0.5 — production providers + workspace sync + demo
 

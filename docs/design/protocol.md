@@ -1,3 +1,7 @@
+---
+status: Active
+---
+
 # over/ACP Protocol
 
 This document specifies the wire protocol that the over/ACP server and
@@ -81,6 +85,33 @@ default lifetime is `DEFAULT_TOKEN_TTL_SECS` (3600 seconds).
 HS256 with a shared signing key. The protocol does not currently
 support asymmetric algorithms; that is on the roadmap for the
 multi-tenant deployment described in `SPEC.md`.
+
+### 2.4 Agent supervisor boot contract
+
+The `overacp-agent` supervisor is configured **exclusively through
+environment variables**. There is no config file, no CLI flags
+beyond `--help`/`--version`, and no positional arguments. The
+controlplane populates these variables on `NodeSpec.env` when it
+calls `ComputeProvider::create_node`; providers MUST forward them
+verbatim to the agent process.
+
+| Variable | Required | Description |
+|---|---|---|
+| `OVERACP_TUNNEL_URL` | yes | Full WebSocket URL including the conversation UUID path, e.g. `wss://server/tunnel/<conv_uuid>`. |
+| `OVERACP_JWT` | yes | Bearer token for the WebSocket upgrade and the LLM proxy. See § 2.1 for the claims. |
+| `OVERACP_AGENT_ID` | yes | The controlplane's `agents.id` for this supervisor process. Echoed in logs and the `sub` claim. |
+| `OVERACP_ADAPTER` | no  | Which `AgentAdapter` to load. Defaults to `loop`. |
+| `OVERACP_WORKSPACE_DIR` | no | Working directory for the child agent process. Defaults to the supervisor's launch CWD. There is no hardcoded `/workspace`. |
+| `OVERACP_RECONNECT_BACKOFF_MS` | no | Test override for the reconnect backoff base. |
+
+The `OVERACP_*` namespace is reserved for the supervisor; providers
+forward any additional `NodeSpec.env` entries verbatim so deployments
+can pass adapter-specific config (e.g. `ANTHROPIC_API_KEY`) without
+the controlplane having to know about it.
+
+The recommended **agent JWT TTL is 30 days**. Rotation is deferred
+(tracked in [`TODO.md`](../../TODO.md) and `SPEC.md` open questions);
+0.4 mints once at agent creation and does not refresh.
 
 ## 3. Method catalogue
 

@@ -1,3 +1,7 @@
+---
+status: Active
+---
+
 # Controlplane
 
 The over/ACP controlplane is the **HTTP + WebSocket service that owns
@@ -8,8 +12,7 @@ to terminate against it.
 
 This doc is the source of truth for the controlplane's REST API, the
 `ComputeProvider` trait, and the agent lifecycle. The wire-protocol
-spec lives in [`protocol.md`](./protocol.md); the loop's tool
-architecture is in [`loop-tools.md`](./loop-tools.md).
+spec lives in [`protocol.md`](./protocol.md).
 
 ## 1. Goals
 
@@ -162,8 +165,11 @@ specific. Secret values are **references**, never inline literals
     "default.memory_gb": "8",
     "default.disk_gb":   "20",
 
-    "max_nodes":  "50",
-    "idle_ttl_s": "1800"
+    "multi_agent_nodes": "false",
+    "node_reuse":        "true",
+
+    "max_nodes":  "50",       // FUTURE — not enforced in 0.4
+    "idle_ttl_s": "1800"      // FUTURE — not enforced in 0.4
   }
 }
 ```
@@ -171,6 +177,21 @@ specific. Secret values are **references**, never inline literals
 The `provider.class` value is matched against the registered
 provider types; the rest is opaque to the controlplane and validated
 by the provider impl.
+
+Two well-known boolean keys steer the agent → node mapping and are
+read by the controlplane itself, not the provider:
+
+| Key                  | Meaning                                                                 |
+|----------------------|-------------------------------------------------------------------------|
+| `multi_agent_nodes`  | Allow more than one agent to share a single node concurrently.          |
+| `node_reuse`         | After the last agent on a node detaches, keep the node for the next agent instead of destroying it. |
+
+Both default to the **provider's** capability (see § 4). A pool may
+only **restrict** these flags relative to its provider — enabling a
+flag the provider does not advertise causes `POST /compute/pools` to
+fail with `422 Unprocessable Entity` and a structured error pointing
+at the offending key. `max_nodes` and `idle_ttl_s` are reserved for
+a future scheduling/idle-reaper layer and are not enforced in 0.4.
 
 ### 3.3 Compute nodes (instances inside a pool)
 
@@ -287,6 +308,43 @@ The `compute` block is the answer to "which node is this agent
 on" — it lets operators jump straight from a misbehaving agent to
 the underlying VM via `/compute/pools/{pool}/nodes/{node_id}`.
 
+#### 3.4.3 Refcount lifecycle and `POST /agents` decision tree
+
+Each `compute_nodes` row carries an `agent_refcount INT` column that
+the controlplane mutates **transactionally** with the corresponding
+`agents` row. The two SessionStore primitives are
+`acquire_node_for_agent` and `release_node_for_agent`; both are
+atomic (single transaction) so the refcount cannot drift if the
+process crashes between the agent insert and the node update.
+
+`POST /agents` — decision tree, evaluated under a write transaction:
+
+1. Look up the pool. Reject 404 if missing, 409 if `paused`/`errored`.
+2. If `multi_agent_nodes = true` **or** `node_reuse = true`, scan
+   pool nodes for a candidate to attach to:
+   - `node_reuse = true, multi_agent_nodes = false`: pick any node
+     with `agent_refcount = 0`.
+   - `multi_agent_nodes = true`: pick any healthy node regardless of
+     refcount (subject to a future per-node cap).
+3. If no candidate is found, call `provider.create_node(NodeSpec)`
+   with the agent's JWT and `OVERACP_*` env vars populated per
+   [`protocol.md`](./protocol.md) § "Agent supervisor boot
+   contract"; insert a fresh `compute_nodes` row with
+   `agent_refcount = 0`.
+4. Insert the `agents` row and bump the chosen node's
+   `agent_refcount` by 1 in the same transaction.
+5. Return the § 3.4.2 describe shape.
+
+`DELETE /agents/{id}` — symmetric:
+
+1. Mark the agent row deleted and decrement `agent_refcount` in one
+   transaction.
+2. If the new refcount is 0 **and** the pool has `node_reuse = false`,
+   call `provider.delete_node()` and mark the row deleted.
+3. If the new refcount is 0 **and** `node_reuse = true`, leave the
+   node in place. An idle reaper (deferred, see § 8) will eventually
+   collect it.
+
 ### 3.5 Sending and receiving ACP commands
 
 Two flavours, both keyed on `agent_id`:
@@ -373,8 +431,29 @@ pub trait ComputeProvider: Send + Sync {
     fn validate_config(config: &serde_json::Map<String, serde_json::Value>)
         -> Result<(), ConfigError>
     where Self: Sized;
+
+    /// Whether this provider can host more than one agent on the same node
+    /// at the same time. Defaults to `false`.
+    fn supports_multi_agent_nodes() -> bool where Self: Sized { false }
+
+    /// Whether nodes spawned by this provider can outlive the agent that
+    /// caused their creation and be reused for the next one. Defaults to
+    /// `false`.
+    fn supports_node_reuse() -> bool where Self: Sized { false }
 }
 ```
+
+The two `supports_*` methods feed the pool config defaults in
+§ 3.2.1: each pool's `multi_agent_nodes` / `node_reuse` flags
+default to the provider's value and may only be set to a more
+restrictive value. Provider defaults:
+
+| `provider.class` | `supports_multi_agent_nodes` | `supports_node_reuse` |
+|---|---|---|
+| `local-process`  | `false` | `false` |
+| `docker`         | `false` | `true`  |
+| `morph`          | `false` | `true`  |
+| `kubernetes`     | `true`  | `true`  |
 
 Notes:
 
@@ -423,6 +502,24 @@ conversations + messages) grows three new tables:
 
 Reference impls ship for in-memory + SQLite first, Postgres later.
 The Overfolder impl stays in `overfolder/controlplane`.
+
+### 6.1 Pool runtime rehydration
+
+Pool runtimes (the live `ComputeProvider` instances and their
+in-process state) are **not** persisted directly — only the pool
+config row is. On every server startup the controlplane MUST
+rehydrate every `compute_pools` row by re-running provider
+construction (`ComputeProvider::from_config`) before the HTTP listener
+is bound. This is the `AppState::bootstrap_from_store()` step in
+`main.rs`. `POST /compute/pools` registers the runtime synchronously
+after validation, so a successful 2xx response means the runtime is
+live in memory and persisted on disk.
+
+Rehydration failures are non-fatal: the row is preserved, the pool
+is marked `errored`, and the operator can hit
+`POST /compute/pools/{name}/resume` to retry. 0.4 ships with the
+in-memory `SessionStore` only; SQLite persistence is a non-blocking
+follow-up tracked in [`TODO.md`](../../TODO.md).
 
 ## 7. How this changes the SPEC roadmap
 
