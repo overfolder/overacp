@@ -293,11 +293,20 @@ impl SessionStore for InMemoryStore {
         // 2. Read pool.node_reuse from config_json. The flag isn't yet
         //    a typed field on ComputePool — promoting it belongs with
         //    the 0.4 handler work. Default false matches §3.4.3.
+        // The REST pool config is a flat string map (see
+        // api/pool_config.rs), so `node_reuse` is stored as the JSON
+        // string "true"/"false", not a JSON bool. Accept both shapes
+        // so the flag works for pools created via the API as well as
+        // ones constructed in-process with a typed bool.
         let node_reuse = g
             .pools
             .get(&agent.pool_name)
             .and_then(|p| p.config_json.get("node_reuse"))
-            .and_then(Value::as_bool)
+            .map(|v| match v {
+                Value::Bool(b) => *b,
+                Value::String(s) => s.eq_ignore_ascii_case("true"),
+                _ => false,
+            })
             .unwrap_or(false);
 
         // 3. Decrement the node's refcount. Saturate at 0 with a
@@ -447,7 +456,9 @@ mod tests {
         ComputePool {
             name: name.to_string(),
             provider_type: "local-process".to_string(),
-            config_json: json!({"node_reuse": node_reuse}),
+            // Stored as a JSON string to match how the REST flat
+            // string-map config arrives in production.
+            config_json: json!({"node_reuse": node_reuse.to_string()}),
             status: PoolStatus::Active,
             created_at: now,
             updated_at: now,
