@@ -54,6 +54,7 @@ pub struct ComputeNode {
     pub provider_metadata: Value,
     pub created_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
+    pub agent_refcount: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

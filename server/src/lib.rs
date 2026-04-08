@@ -16,7 +16,7 @@ pub use basic_auth::{HtpasswdError, HtpasswdFile};
 pub use routes::router;
 pub use state::AppState;
 pub use store::{
-    Agent, AgentStatus, ComputeNode, ComputePool, Conversation, InMemoryStore, Message, NodeStatus,
-    PoolStatus, SessionStore, StoreError,
+    AcquireOutcome, Agent, AgentStatus, ComputeNode, ComputePool, Conversation, InMemoryStore,
+    Message, NodeStatus, PoolStatus, ReleaseOutcome, SessionStore, StoreError,
 };
 pub use tunnel::StreamBroker;
