@@ -156,6 +156,10 @@ pub async fn require_basic_auth(
 
 #[cfg(test)]
 mod tests {
+    use std::env::temp_dir;
+    use std::fs;
+    use std::process;
+
     use super::*;
 
     fn sample_file() -> String {
@@ -202,17 +206,16 @@ mod tests {
 
     #[test]
     fn load_reads_from_file() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("overacp-htpasswd-test-{}.txt", std::process::id()));
-        std::fs::write(&path, sample_file()).unwrap();
+        let path = temp_dir().join(format!("overacp-htpasswd-test-{}.txt", process::id()));
+        fs::write(&path, sample_file()).unwrap();
         let f = HtpasswdFile::load(&path).unwrap();
         assert!(f.verify("alice", "hunter2"));
-        let _ = std::fs::remove_file(&path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn load_propagates_io_error_for_missing_file() {
-        let path = std::env::temp_dir().join("overacp-htpasswd-does-not-exist-xyz");
+        let path = temp_dir().join("overacp-htpasswd-does-not-exist-xyz");
         let err = HtpasswdFile::load(&path).unwrap_err();
         assert!(matches!(err, HtpasswdError::Io(_)));
     }
