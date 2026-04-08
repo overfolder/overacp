@@ -89,6 +89,11 @@ impl ComputeProvider for LocalProvider {
         PROVIDER_TYPE
     }
 
+    // `supports_multi_agent_nodes` and `supports_node_reuse` use the
+    // trait defaults (`false`/`false`) — see `docs/design/controlplane.md`
+    // § 4. The `capability_flags_match_design_doc_defaults` test pins the
+    // values so a future change here is intentional.
+
     fn from_config(config: ResolvedConfig) -> Result<Self, ProviderError> {
         let agent_binary = config
             .get("local.agent_binary")
@@ -391,6 +396,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ProviderError::Timeout));
+    }
+
+    #[test]
+    fn capability_flags_match_design_doc_defaults() {
+        assert!(!LocalProvider::supports_multi_agent_nodes());
+        assert!(!LocalProvider::supports_node_reuse());
     }
 
     #[test]

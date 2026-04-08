@@ -80,6 +80,8 @@ impl ProviderPlugin for LocalProcessPlugin {
             provider_type: "local-process".into(),
             display_name: "Local process".into(),
             version: env!("CARGO_PKG_VERSION").into(),
+            supports_multi_agent_nodes: false,
+            supports_node_reuse: false,
         }
     }
 
@@ -113,6 +115,8 @@ impl ProviderPlugin for MorphPlugin {
             provider_type: "morph".into(),
             display_name: "Morph Cloud".into(),
             version: env!("CARGO_PKG_VERSION").into(),
+            supports_multi_agent_nodes: false,
+            supports_node_reuse: true,
         }
     }
 

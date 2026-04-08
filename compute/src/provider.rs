@@ -30,6 +30,26 @@ pub trait ComputeProvider: Send + Sync {
     where
         Self: Sized;
 
+    /// Whether this provider can host more than one agent on the same node
+    /// at the same time. Defaults to `false`. See `docs/design/controlplane.md`
+    /// § 4 for the per-provider defaults table.
+    fn supports_multi_agent_nodes() -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
+
+    /// Whether nodes spawned by this provider can outlive the agent that
+    /// caused their creation and be reused for the next one. Defaults to
+    /// `false`. See `docs/design/controlplane.md` § 4.
+    fn supports_node_reuse() -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
+
     /// Provision a new node and return its handle.
     async fn create_node(&self, spec: NodeSpec) -> Result<NodeHandle, ProviderError>;
 
