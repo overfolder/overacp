@@ -138,7 +138,11 @@ impl BootConfig {
 
         let reconnect_backoff_ms = match optional(env, ENV_RECONNECT_BACKOFF_MS)? {
             Some(v) if !v.is_empty() => {
-                Some(v.parse::<u64>().map_err(|_| ConfigError::InvalidBackoff)?)
+                let n: u64 = v.parse().map_err(|_| ConfigError::InvalidBackoff)?;
+                if n == 0 {
+                    return Err(ConfigError::InvalidBackoff);
+                }
+                Some(n)
             }
             _ => None,
         };
@@ -332,6 +336,15 @@ mod tests {
     #[test]
     fn reconnect_backoff_invalid_errors() {
         let env = minimal().set(ENV_RECONNECT_BACKOFF_MS, "fast");
+        assert!(matches!(
+            BootConfig::from_env(&env),
+            Err(ConfigError::InvalidBackoff)
+        ));
+    }
+
+    #[test]
+    fn reconnect_backoff_zero_rejected() {
+        let env = minimal().set(ENV_RECONNECT_BACKOFF_MS, "0");
         assert!(matches!(
             BootConfig::from_env(&env),
             Err(ConfigError::InvalidBackoff)
