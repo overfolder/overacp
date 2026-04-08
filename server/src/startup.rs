@@ -41,8 +41,8 @@ pub enum StartupError {
 /// - `OVERACP_DEFAULT_USER_ID` (optional UUID; empty string treated as
 ///   unset)
 pub fn build_state_from_env() -> Result<AppState, StartupError> {
-    let signing_key = env::var("OVERACP_JWT_SIGNING_KEY")
-        .map_err(|_| StartupError::MissingSigningKey)?;
+    let signing_key =
+        env::var("OVERACP_JWT_SIGNING_KEY").map_err(|_| StartupError::MissingSigningKey)?;
     let issuer = env::var("OVERACP_JWT_ISSUER").unwrap_or_else(|_| "overacp".to_string());
 
     let mut state = AppState::new(

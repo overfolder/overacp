@@ -89,7 +89,9 @@ async fn control_plane_status(state: overacp_server::AppState) -> StatusCode {
 #[tokio::test(flavor = "current_thread")]
 async fn missing_signing_key_errors() {
     let _g = EnvGuard::new();
-    let err = build_state_from_env().err().expect("should fail without signing key");
+    let err = build_state_from_env()
+        .err()
+        .expect("should fail without signing key");
     assert!(matches!(err, StartupError::MissingSigningKey));
     assert!(err.to_string().contains("OVERACP_JWT_SIGNING_KEY"));
 }
@@ -160,7 +162,9 @@ async fn malformed_default_user_id_errors() {
     let g = EnvGuard::new();
     g.set("OVERACP_JWT_SIGNING_KEY", "k");
     g.set("OVERACP_DEFAULT_USER_ID", "not-a-uuid");
-    let err = build_state_from_env().err().expect("malformed UUID should fail");
+    let err = build_state_from_env()
+        .err()
+        .expect("malformed UUID should fail");
     assert!(matches!(err, StartupError::InvalidDefaultUserId(_)));
     assert!(err.to_string().contains("valid UUID"));
 }
