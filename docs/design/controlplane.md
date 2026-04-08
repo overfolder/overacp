@@ -75,11 +75,37 @@ Agent            a logical conversation pinned to one ComputeNode
 All endpoints are served at the root (no `/api/v{n}` prefix). Stability
 comes from software semver, not URL versioning — breaking REST changes
 ride a major release of `overacp-server` and operators stay on the
-prior version if they need the old shape. Authentication is via
-`Authorization: Bearer <jwt>` (the same JWT format as the WebSocket
-tunnel — see [`protocol.md`](./protocol.md) § 2). Admin endpoints
-require an additional scope claim (`admin: true` or similar — the
-exact shape is left to the `Authenticator` impl).
+prior version if they need the old shape.
+
+**Authentication** splits along the agent vs. operator axis:
+
+- **Agent-facing routes** — `/tunnel/{session_id}` (WS upgrade) and
+  the REST adapters under § 3.5 (`/agents/{id}/messages`,
+  `/agents/{id}/stream`, `/agents/{id}/cancel`) — use
+  `Authorization: Bearer <jwt>`, the same session JWT format as the
+  WebSocket tunnel (see [`protocol.md`](./protocol.md) § 2).
+- **Control-plane routes** — `/compute/*` (§ 3.1–3.3) and the admin
+  `/agents` lifecycle (§ 3.4) — use HTTP Basic
+  (`Authorization: Basic <base64(user:pass)>`). Credentials are
+  loaded once at startup from an htpasswd(5) file pointed to by the
+  `OVERACP_BASIC_AUTH_FILE` env var. Only bcrypt hashes are accepted
+  — generate the file with the apache2-utils `htpasswd` CLI:
+
+  ```
+  htpasswd -B -c /etc/overacp/creds alice
+  ```
+
+  If `OVERACP_BASIC_AUTH_FILE` is unset the server still boots, but
+  every control-plane request returns `503 Service Unavailable` with
+  a body pointing at the env var. There is no open-by-default mode.
+
+  Because HTTP Basic carries no notion of a user UUID and the
+  storage layer (and the existing JWT `Claims`) wants one, an
+  optional `OVERACP_DEFAULT_USER_ID` env var supplies the UUID
+  attributed to control-plane writes (create pool, create agent, …).
+
+The `Authenticator` trait remains the extension point for swapping
+either side out in production (OIDC, mTLS, API keys, …).
 
 ### 3.1 Compute providers (the plugin catalogue)
 

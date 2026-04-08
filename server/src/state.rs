@@ -2,9 +2,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use overacp_compute_core::ComputeProvider;
+use uuid::Uuid;
 
 use crate::api::ProviderRegistry;
 use crate::auth::Authenticator;
+use crate::basic_auth::HtpasswdFile;
 use crate::store::SessionStore;
 use crate::tunnel::broker::StreamBroker;
 use crate::tunnel::session_manager::{new_session_manager, SessionManager};
@@ -24,6 +26,13 @@ pub struct AppState {
     pub authenticator: Arc<dyn Authenticator>,
     pub sessions: SessionManager,
     pub stream_broker: Arc<StreamBroker>,
+    /// Htpasswd-backed credentials for control-plane HTTP Basic auth.
+    /// `None` means control-plane endpoints will return 503.
+    pub basic_auth: Option<Arc<HtpasswdFile>>,
+    /// User UUID attributed to control-plane writes made via HTTP
+    /// Basic auth (which carries no user identity). `None` means
+    /// control-plane handlers that need a user must reject the call.
+    pub default_user_id: Option<Uuid>,
 }
 
 impl AppState {
@@ -39,7 +48,21 @@ impl AppState {
             authenticator,
             sessions: new_session_manager(),
             stream_broker: StreamBroker::new(),
+            basic_auth: None,
+            default_user_id: None,
         }
+    }
+
+    /// Builder: attach a loaded htpasswd file for control-plane auth.
+    pub fn with_basic_auth(mut self, file: Arc<HtpasswdFile>) -> Self {
+        self.basic_auth = Some(file);
+        self
+    }
+
+    /// Builder: set the default user UUID for control-plane writes.
+    pub fn with_default_user_id(mut self, user: Uuid) -> Self {
+        self.default_user_id = Some(user);
+        self
     }
 
     pub fn register_pool_runtime(
@@ -55,5 +78,30 @@ impl AppState {
 
     pub fn pool_runtime(&self, pool: &str) -> Option<Arc<dyn ComputeProvider>> {
         self.pool_runtimes.read().unwrap().get(pool).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::default_registry;
+    use crate::auth::StaticJwtAuthenticator;
+    use crate::store::InMemoryStore;
+
+    fn base() -> AppState {
+        AppState::new(
+            Arc::new(InMemoryStore::new()),
+            Arc::new(default_registry()),
+            Arc::new(StaticJwtAuthenticator::new("k", "overacp")),
+        )
+    }
+
+    #[test]
+    fn with_default_user_id_sets_field() {
+        let state = base();
+        assert!(state.default_user_id.is_none());
+        let uid = Uuid::new_v4();
+        let state = state.with_default_user_id(uid);
+        assert_eq!(state.default_user_id, Some(uid));
     }
 }

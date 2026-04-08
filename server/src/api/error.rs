@@ -1,7 +1,7 @@
 //! Handler-facing error type. Mapped to HTTP status codes by
 //! the axum [`IntoResponse`] impl.
 
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
@@ -19,6 +19,8 @@ pub enum ApiError {
     NotFound(String),
     #[error("bad request: {0}")]
     BadRequest(String),
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
     /// Body parsed as JSON but did not match the flat-string-map
     /// shape required by `PoolConfig`.
     #[error("malformed pool config: {0}")]
@@ -46,6 +48,18 @@ impl IntoResponse for ApiError {
                 Json(json!({ "error": "bad_request", "message": msg })),
             )
                 .into_response(),
+            Self::Unauthorized(msg) => {
+                let mut resp = (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": "unauthorized", "message": msg })),
+                )
+                    .into_response();
+                resp.headers_mut().insert(
+                    header::WWW_AUTHENTICATE,
+                    HeaderValue::from_static("Basic realm=\"overacp\""),
+                );
+                resp
+            }
             Self::MalformedConfig(e) => (
                 StatusCode::BAD_REQUEST,
                 Json(json!({ "error": "bad_request", "message": e.to_string() })),
@@ -83,5 +97,25 @@ impl IntoResponse for ApiError {
             )
                 .into_response(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt;
+
+    #[tokio::test]
+    async fn unauthorized_sets_status_and_www_authenticate() {
+        let resp = ApiError::Unauthorized("nope".into()).into_response();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            resp.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+            "Basic realm=\"overacp\""
+        );
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "unauthorized");
+        assert_eq!(v["message"], "nope");
     }
 }
