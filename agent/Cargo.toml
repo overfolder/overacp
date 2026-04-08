@@ -1,0 +1,20 @@
+[package]
+name = "overacp-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "overacp-agent"
+path = "src/main.rs"
+
+[dependencies]
+thiserror = { workspace = true }
+uuid = { workspace = true, features = ["v4", "serde"] }
+
+[lints]
+workspace = true
