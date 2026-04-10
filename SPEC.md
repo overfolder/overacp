@@ -1,128 +1,300 @@
-# over/ACP — remote agentic compute, factored out
+# over/ACP — message broker for remote agents
 
-**Status:** Draft (initial commit, 2026-04-06)
+**Status:** Draft (broker refactor, 2026-04-09)
 **Repo:** github.com/overfolder/overacp
 **License:** Apache-2.0
+**Historical:** see [`SPEC_OLD.md`](./SPEC_OLD.md) for the prior
+controlplane-shaped design this document supersedes.
 
 ## What this is
 
-over/ACP is the framework that runs LLM agents on **remote compute** behind a
-**single multiplexed WebSocket tunnel**, with a small **agent loop** at the
-other end. It is the substrate that Overfolder runs on, extracted so anyone
-can build on it without taking on Overfolder's product surface (Telegram,
-billing, channels, secret vault).
+over/ACP is a small framework for **dispatching messages to LLM
+agents that run somewhere else**. Its core is a **stateless message
+broker**: agents connect over a single multiplexed WebSocket tunnel
+and the broker routes user messages, tool calls, and streaming output
+between the agents and an external system that owns everything
+durable.
 
-The primitives:
+over/ACP does not manage compute, store conversations, or own agent
+identity. Those are jobs for whichever system wraps it.
 
-- **Protocol** — JSON-RPC 2.0 messages for session control, streaming, tool
-  calls, quota, persistence. The wire format is small and stable.
-- **Server** — accepts WebSocket tunnels from agents, dispatches the protocol,
-  optionally proxies LLM calls (OpenAI-compatible passthrough), and exposes
-  pluggable traits for storage, auth, quota, tools, and compute backends.
-- **Agent** — runs *inside* the compute environment (a VM, container, bare
-  metal, your laptop). Holds one WebSocket to the server, supervises a child
-  agent process, and bridges its stdio to the wire.
-- **Loop** — the reference agent: a minimal agentic loop with built-in
-  filesystem/exec tools, optional MCP, and an OpenAI-compatible LLM client.
-  Talks the protocol on stdin/stdout. Other agents can be plugged in.
+## What over/ACP does
+
+- **Terminates agent tunnels.** One WebSocket per agent, JSON-RPC 2.0
+  on the wire, JWT bearer auth on upgrade.
+- **Routes user messages to agents.** `POST /agents/{id}/messages`
+  pushes a message frame down the agent's tunnel as a `session/message`
+  notification. Body travels in the notification — no poll round-trip.
+- **Fans out streaming output.** `GET /agents/{id}/stream` is an SSE
+  feed of `stream/textDelta`, `stream/toolCall`, `stream/toolResult`,
+  and `turn/end` notifications emitted by the agent.
+- **Routes tool calls.** Agents call `tools/list` / `tools/call` over
+  the tunnel; the broker dispatches them through a pluggable
+  `ToolHost` (typically a controlplane-hosted MCP fan-out implemented
+  by the operator).
+- **Bootstraps agents.** On `initialize` the broker delegates to a
+  `BootProvider` hook supplied by the operator, which returns the
+  system prompt + recent message window. The broker stores nothing.
+- **Enforces quota.** `quota/check` and `quota/update` delegate to a
+  `QuotaPolicy` hook.
+- **Authenticates.** Pluggable `Authenticator` trait. Reference impl
+  is HS256 JWT against a static signing key.
+- **Buffers pushes for disconnected agents.** A small bounded
+  in-memory `MessageQueue` per agent holds `session/message` pushes
+  that arrive while the tunnel is down; on reconnect the queue is
+  drained before normal traffic resumes.
+
+## What over/ACP does NOT do
+
+- **No persistence.** No conversation store, no message table, no
+  `SessionStore` trait. The broker keeps only in-memory routing
+  state. The operator owns durable storage.
+- **No compute provisioning.** over/ACP does not start, stop, scale,
+  or schedule the environments where agents run. An external
+  orchestrator launches compute and points the agent at the broker
+  via `OVERACP_TUNNEL_URL` and `OVERACP_JWT`.
+- **No agent enrollment API.** Connecting with a valid JWT *is* the
+  enrollment. There is no `POST /agents`.
+- **No identity hierarchy.** No tier, plan, or entitlement claim in
+  the JWT. Whatever identity model the operator wants lives outside.
+- **No tool registry.** `ToolHost` is a trait. Tools come from
+  whatever the operator plugs in (MCP fan-out, custom registry, ...).
+- **No workspace sync.** Workspace hydration is the agent's
+  responsibility, configured outside the protocol.
+- **No channels.** Telegram, Slack, web UI, voice — all jobs for the
+  layer that drives the broker over REST.
+- **No durable resume state.** "Resume agent X" means cold-starting
+  the agent, which calls `BootProvider::initialize`; the operator's
+  hook decides what resumed state to return.
+
+## Crates
+
+| Crate | What |
+|---|---|
+| `overacp-protocol` | Pure wire types, method-name constants, JWT claim helpers. No I/O, no tokio. |
+| `overacp-agent` | Supervisor that holds the WebSocket and bridges JSON-RPC to a child process's stdio. `AgentAdapter` trait so the supervised child can be any ACP-speaking harness. |
+| `overacp-server` | The broker. Stateless tunnel terminator + REST adapters + the four pluggable hooks (`BootProvider`, `ToolHost`, `QuotaPolicy`, `Authenticator`). |
+| **`overloop`** | Reference child agent: minimal agentic loop with built-in tools and an OpenAI-compatible LLM client. Speaks the protocol on stdio. |
+
+Compute providers, workspace-sync backends, MCP `ToolHost`
+implementations, and storage adapters live **outside** these four
+crates — either as separate crates the operator pulls in, or in the
+operator's own codebase.
+
+## Architecture
 
 ```
-┌─────────────────────────┐                   ┌─────────────────────────┐
-│  overacp-server         │   one WebSocket   │  overacp-agent          │
-│  (control plane)        │◄─────────────────►│  (one per compute unit) │
-│                         │   JSON-RPC 2.0    │                         │
-│  - WS hub               │                   │  - reconnects            │
-│  - Auth (JWT/OIDC/...)  │                   │  - spawns child         │
-│  - LLM proxy            │                   │  - bridges stdio        │
-│  - SessionStore trait   │                   │                         │
-│  - QuotaPolicy trait    │                   │      stdin/stdout       │
-│  - ToolHost trait       │                   │           ▲             │
-│  - ComputeBackend trait │                   │           │             │
-└─────────────────────────┘                   │  ┌────────┴────────┐    │
-                                              │  │  overloop        │   │
-                                              │  │  (or any agent)  │   │
-                                              │  │                  │   │
-                                              │  │  - LLM client    │   │
-                                              │  │  - built-in tools│   │
-                                              │  │  - MCP client    │   │
-                                              │  └──────────────────┘   │
-                                              └─────────────────────────┘
+┌─────────────────────────── trusted side ─────────────────────────────┐
+│                                                                       │
+│   ┌─────────────────────────────────────────────────────────────┐    │
+│   │  External system (operator's process)                       │    │
+│   │  ── owns durable conversation/user/quota state              │    │
+│   │  ── implements BootProvider, ToolHost, QuotaPolicy          │    │
+│   │  ── drives the broker via REST                              │    │
+│   │                                                             │    │
+│   │  ┌───────────────────────────────────────────────────────┐ │    │
+│   │  │  overacp-server  (in-process or sidecar)              │ │    │
+│   │  │  ── stateless: AgentRegistry + MessageQueue +         │ │    │
+│   │  │     StreamBroker, all in-memory                       │ │    │
+│   │  │  ── invokes the operator's hook impls per request     │ │    │
+│   │  └─────────────────────┬─────────────────────────────────┘ │    │
+│   └────────────────────────┼───────────────────────────────────┘    │
+│                            │                                         │
+│                            │  WebSocket tunnel                        │
+│                            │  JSON-RPC 2.0, JWT bearer                │
+│                            │                                         │
+└────────────────────────────┼─────────────────────────────────────────┘
+                             │
+┌────────────────────────────┼──────── untrusted side ─────────────────┐
+│                            │                                         │
+│   ┌────────────────────────▼─────────────────────────────────┐      │
+│   │  Compute environment (VM, container, laptop, ...)        │      │
+│   │  ── launched by external orchestrator                    │      │
+│   │  ── only knows OVERACP_TUNNEL_URL + OVERACP_JWT          │      │
+│   │  ── no DB credentials, no operator secrets               │      │
+│   │                                                          │      │
+│   │  ┌────────────────────────────────────────────────────┐ │      │
+│   │  │  overacp-agent (supervisor)                        │ │      │
+│   │  │  ── opens the WebSocket, reconnects on drop        │ │      │
+│   │  │  ── bridges WS frames ↔ child stdio                │ │      │
+│   │  └─────────────────────┬──────────────────────────────┘ │      │
+│   │                        │                                │      │
+│   │  ┌─────────────────────▼──────────────────────────────┐ │      │
+│   │  │  overloop (or any ACP-speaking child)              │ │      │
+│   │  │  ── runs the agentic loop                          │ │      │
+│   │  │  ── holds the working conversation in memory       │ │      │
+│   │  │  ── refetches via `initialize` on cold start       │ │      │
+│   │  └────────────────────────────────────────────────────┘ │      │
+│   └──────────────────────────────────────────────────────────┘      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-## Why ACP
+The trust boundary cuts through the WebSocket. Hook implementations
+run on the trusted side with whatever credentials the operator gives
+them; the agent VM only ever sees JSON the broker sends back through
+the tunnel.
 
-The framework speaks "ACP" — short for **Agent Control Protocol**. It is a
-small JSON-RPC 2.0 vocabulary covering session lifecycle, streaming output,
-tool calls, persistence, and quota. It is intentionally close to other
-emerging agent protocols (Zed/Anthropic Agent Client Protocol, IBM ACP) so
-that adapters can be cheap, but it is its own thing because it includes the
-control-plane responsibilities (storage, quota, multiplexing, compute
-provisioning) those other protocols leave open.
+## Wire protocol summary
 
-The protocol crate is the contract; the server and agent are reference
-implementations.
+Full spec in [`docs/design/protocol.md`](./docs/design/protocol.md).
 
-## Crate map (target)
+A single multiplexed WebSocket tunnel per agent, JSON-RPC 2.0 frames,
+JWT in the `Authorization: Bearer` header on upgrade.
 
-| Crate | Status | What |
-|---|---|---|
-| `overacp-protocol` | TODO | Wire types, JSON-RPC method names, JWT claims helpers, no I/O |
-| `overacp-agent` | TODO | WS client, child supervisor, stdio bridge, `WorkspaceSync` and `AgentAdapter` traits |
-| **`overloop`** | **here** | Reference agent: agentic loop + built-in tools + LLM client |
-| `overacp-server` | TODO | The controlplane: REST API for compute pools/nodes/agents, `ComputeProvider` trait, tunnel + dispatcher + LLM proxy |
-| `overacp-compute-local` | TODO | `ComputeProvider` impl: spawns the agent as a local subprocess. Zero-infra default. |
-| `overacp-compute-docker` | TODO | `ComputeProvider` impl: Docker daemon |
-| `overacp-compute-morph` | TODO | `ComputeProvider` impl: Morph Cloud (lifted from `overfolder/backend/src/routes/workspace.rs`) |
-| `overacp-workspace-gcs` | TODO | `WorkspaceSync` impl: GCS object prefix |
-| `overacp-workspace-s3` | TODO | `WorkspaceSync` impl: S3-compatible |
-| `overacp-tools-mcp` | TODO | `ToolHost` impl that fans out to backing MCP servers (controlplane-side) |
+JWT claims:
 
-Each compute provider and each workspace-sync backend is its own
-crate so the server binary stays small and operators pick what to
-compile in. See [`docs/design/controlplane.md`](./docs/design/controlplane.md)
-and [`docs/design/workspace-sync.md`](./docs/design/workspace-sync.md)
-for the full design.
+| Field | Meaning |
+|---|---|
+| `sub`  | agent_id (also the routing key) |
+| `user` | optional opaque user identifier (operator-defined) |
+| `exp`  | expiry |
+| `iss`  | issuer |
 
-## Non-goals (intentional)
+Method catalogue:
 
-- **Not a hosted product.** No billing, no channels (Telegram/WhatsApp/Slack),
-  no per-user dashboard. Build those on top.
-- **Not a tool registry.** Tools come from the agent's built-ins, from MCP
-  servers you wire in, or from your own `ToolHost` implementation.
-- **Not opinionated about identity.** Agent-facing routes use the
-  session JWT; control-plane routes (`/compute/*`, admin `/agents`)
-  use HTTP Basic backed by an htpasswd(5) file
-  (`OVERACP_BASIC_AUTH_FILE`, bcrypt only). Bring your own
-  `Authenticator` for production (OIDC, API keys, mTLS, ...). See
-  [`docs/design/controlplane.md`](./docs/design/controlplane.md) § 3.
-- **Not opinionated about storage.** Server traits over Postgres, SQLite, or
-  in-memory. Pick what fits.
-- **Not coupled to one compute provider.** Reference adapters for local
-  process, Docker, Firecracker, and Morph; trait lets you add more.
+| Method              | Origin     | Direction       | Kind         | Handled by |
+|---------------------|------------|-----------------|--------------|------------|
+| `initialize`        | ACP        | agent → server  | request      | `BootProvider::initialize` |
+| `session/message`   | extension  | server → agent  | notification | (push from REST; payload carries the body) |
+| `session/cancel`    | extension  | server → agent  | notification | (push from `POST /agents/{id}/cancel`) |
+| `tools/list`        | MCP        | agent → server  | request      | `ToolHost::list` |
+| `tools/call`        | MCP        | agent → server  | request      | `ToolHost::call` |
+| `quota/check`       | extension  | agent → server  | request      | `QuotaPolicy::check` |
+| `quota/update`      | extension  | agent → server  | request      | `QuotaPolicy::record` |
+| `stream/textDelta`  | extension  | agent → server  | notification | broker fan-out → SSE |
+| `stream/activity`   | extension  | agent → server  | notification | broker fan-out → SSE |
+| `stream/toolCall`   | extension  | agent → server  | notification | broker fan-out → SSE |
+| `stream/toolResult` | extension  | agent → server  | notification | broker fan-out → SSE |
+| `turn/end`          | extension  | agent → server  | notification | broker fan-out → SSE (operator persists) |
+| `heartbeat`         | extension  | agent → server  | notification | registry liveness ping |
 
-## What goes here vs. what stays in Overfolder
+Method-name origin policy: borrow from upstream where possible.
+`initialize` is from Zed/Anthropic ACP. `tools/list` and `tools/call`
+are from MCP. The rest are over/ACP extensions and have no upstream
+equivalent. Per-method classification lives in the protocol doc.
 
-**Lives in over/ACP (generic, OSS):**
-- The wire protocol and its types.
-- The WebSocket multiplexer and JSON-RPC dispatcher.
-- The OpenAI-compatible LLM proxy with hooks (auth, model routing, metering).
-- The agent process supervisor and stdio bridge.
-- The reference agent loop and its built-in tools.
-- Reference compute backends.
+## REST surface
 
-**Stays in Overfolder (product, closed or separate):**
-- Channels gateway (Telegram/WhatsApp webhooks, web dashboard).
-- Identity hierarchy and secret vault (Overslash).
-- Platform MCP tools (`overfolder-mcp`: schedule, send_message, spawn_agent,
-  search_history, ...).
-- Postgres schema for users/conversations/messages (Overfolder's
-  `SessionStore` impl points at this).
-- Tier-based quota policy and Stripe billing.
-- Morph image baking, Terraform, deployment scripts.
+Agent-facing routes (`/tunnel/{id}`, `/agents/{id}/messages`,
+`/agents/{id}/stream`, `/agents/{id}/cancel`) authenticate with the
+same JWT as the tunnel. Operator-facing routes (`GET /agents`,
+`GET /agents/{id}`, `DELETE /agents/{id}`) authenticate with whatever
+the `Authenticator` impl accepts; the reference deployment uses HTTP
+Basic backed by an htpasswd file (bcrypt only).
 
-Overfolder's `controlplane` becomes a thin shim crate that depends on
-`overacp-server` and plugs in Overfolder-specific implementations of the
-traits.
+```
+POST   /agents/{id}/messages    push a message (queued if disconnected)
+GET    /agents/{id}/stream      SSE feed of stream/* and turn/end
+POST   /agents/{id}/cancel      inject a session/cancel notification
+GET    /agents/{id}             describe — connection state, last activity, claims
+GET    /agents                  list connected (and recently disconnected) agents
+DELETE /agents/{id}             force-disconnect the tunnel
+```
+
+There is intentionally no `POST /agents`. Agents enroll implicitly on
+their first connect with a valid JWT.
+
+## The four hooks
+
+over/ACP-server is a router. The substance behind every dispatched
+method comes from a trait the operator implements:
+
+```rust
+#[async_trait]
+pub trait BootProvider: Send + Sync {
+    async fn initialize(&self, claims: &Claims) -> Result<InitializeResponse, BootError>;
+}
+
+#[async_trait]
+pub trait ToolHost: Send + Sync {
+    async fn list(&self, claims: &Claims) -> Result<ToolList, ToolError>;
+    async fn call(&self, claims: &Claims, req: ToolCall) -> Result<ToolResult, ToolError>;
+}
+
+#[async_trait]
+pub trait QuotaPolicy: Send + Sync {
+    async fn check(&self, claims: &Claims) -> Result<bool, QuotaError>;
+    async fn record(&self, claims: &Claims, usage: Usage) -> Result<(), QuotaError>;
+}
+
+pub trait Authenticator: Send + Sync {
+    fn validate(&self, token: &str) -> Result<Claims, AuthError>;
+}
+```
+
+Default implementations: `BootProvider` returns an empty bootstrap
+(no system prompt, no history); `ToolHost` returns no tools;
+`QuotaPolicy` allows everything; `Authenticator` validates HS256 JWTs
+against a static signing key. The reference server boots with all
+four defaults so `cargo run` works out of the box and end-to-end
+demos don't need an operator stack.
+
+## What lives outside
+
+over/ACP is intentionally a small core. Everything below is the
+operator's responsibility, or another (separately distributed)
+crate's:
+
+- **Conversation storage.** Postgres, SQLite, Firestore, JSONL on
+  disk — operator picks. The `BootProvider` hook is the seam between
+  the broker and the store.
+- **Compute provisioning.** Spinning up VMs / containers / processes
+  and pointing them at the broker. Reference orchestrators may ship
+  as separate examples or crates, but none of them are part of the
+  broker core.
+- **Workspace sync.** Hydrating `/workspace` from object storage on
+  cold start. Agent-side concern; the protocol carries no workspace
+  messages.
+- **Channels.** Telegram, web chat, Slack, voice — built on top of
+  the REST surface, not in the broker.
+- **Identity, billing, tier policy.** No JWT claim, no method, no
+  trait in over/ACP encodes any of this. The `user` claim is opaque
+  to the broker.
+- **Tool catalogues / MCP servers.** A `ToolHost` impl can fan out
+  to many MCP servers; that fan-out is operator code.
+- **Conversation resume / scrollback.** `initialize` returns whatever
+  bounded window the operator's `BootProvider` hands back. Older
+  history is reachable as a tool (`tools/call recall_history(...)`),
+  not as a protocol method.
+
+## Roadmap
+
+The roadmap is shaped around landing the broker core and getting the
+reference loop talking to it. Each milestone is small enough to ship
+behind a single acceptance test.
+
+1. **0.1 — vendor `loop`** *(landed)* — copy the reference agent in
+   as the `overloop` crate, set up the workspace.
+2. **0.2 — `overacp-protocol`** — extract pure wire types and
+   method-name constants from the existing server code into a
+   tokio-free crate. JWT helpers. Round-trip fixture tests against
+   captured JSON.
+3. **0.3 — `overacp-agent`** — WS client with reconnect/backoff,
+   child-process supervisor, stdio bridge. `AgentAdapter` trait so
+   the supervised child can be any ACP-speaking harness; built-in
+   adapter for `overloop`.
+4. **0.3.x — `overloop` migration to the protocol crate** — switch
+   from hard-coded JSON-RPC strings to `overacp-protocol::methods`,
+   adopt the new push-shaped `session/message`, drop
+   `poll/newMessages`, emit `turn/end` instead of `turn/save`.
+5. **0.4 — `overacp-server`: the broker** — stateless tunnel
+   terminator + REST adapters + the four traits with no-op default
+   impls. Acceptance gate is a single end-to-end test
+   (`server/tests/acceptance_0_4.rs`) that runs the broker in-process,
+   spawns `overloop` as a subprocess, posts to
+   `/agents/X/messages`, and asserts a `stream/textDelta` arrives on
+   `/agents/X/stream`. **No compute provider, no `SessionStore`, no
+   Postgres** — those are all out of scope for the broker itself.
+6. **0.5 — production hardening** — reconnect/redelivery semantics
+   for the message queue, multi-replica routing options (sticky LB
+   on `agent_id` or shared registry via Redis/NATS), operator REST
+   stability, a real `ToolHost` reference impl wired to MCP fan-out.
+7. **0.6 — overfolder cutover** — overfolder ships its own
+   `BootProvider` and `QuotaPolicy` impls and uses the broker for
+   backend ↔ agent-runner communication. overfolder keeps its
+   existing Morph integration; the broker doesn't see it.
+8. **1.0 — protocol + REST freeze** — semver-stable wire format and
+   v1 REST surface.
 
 ## Documentation rule
 
@@ -136,138 +308,27 @@ design doc or a new section in an existing one, add (or update) the
 SPEC link in the same change. If you supersede a design, flip the
 frontmatter and drop the SPEC link in the same change.
 
-## Roadmap
-
-The roadmap is shaped around standing up a controlplane that owns
-**compute provisioning and agent lifecycle**, not just protocol
-plumbing. The server is the centerpiece; everything before it is
-prep, everything after it is filling in providers and demos.
-
-1. **0.1 — vendor `loop`** *(landed)* — copy the reference agent in
-   as the `overloop` crate, set up the workspace.
-2. **0.2 — `overacp-protocol`** — extract the wire types from
-   Overfolder's `controlplane/src/{acp,session}.rs`. Pure types, no I/O.
-3. **0.3 — `overacp-agent`** — lift `overfolder/overlet` here, depend
-   on `overacp-protocol`. `AgentAdapter` and `WorkspaceSync` traits.
-4. **0.3.x — `overloop` migration** — make the reference agent
-   protocol-conformant: depend on `overacp-protocol`, fix the
-   `session/message → poll/newMessages` flow, emit `stream/toolCall`
-   and `stream/toolResult`, unify the four tool sources (built-in,
-   supervisor-injected, ACP-tunnelled, MCP-direct).
-5. **0.4 — `overacp-server`: compute-pool controlplane** — the
-   centerpiece. The acceptance gate for this milestone is a single
-   end-to-end test (`server/tests/acceptance_0_4.rs`) that creates a
-   `local-process` pool, creates an agent on it, sends a message,
-   subscribes to the SSE stream, asserts a `stream/textDelta` arrives,
-   `exec`s on the spawned node, and confirms the node is destroyed
-   on `DELETE /agents/{id}`. To make that test pass we land:
-
-   - REST API for compute pools, compute nodes, and agents per
-     [`docs/design/controlplane.md`](./docs/design/controlplane.md)
-     § 3 (Kafka-Connect-shaped, served at the root, no `/api/v{n}`).
-   - The `ComputeProvider` trait per § 4, including the
-     `supports_multi_agent_nodes` / `supports_node_reuse` capability
-     methods and the provider defaults table. `overacp-compute-local`
-     ships in the same milestone so the demo and acceptance test work
-     without infra.
-   - Pool config gains the `multi_agent_nodes` / `node_reuse` keys
-     (§ 3.2.1). A pool may only restrict the provider's capability;
-     attempting to enable a flag the provider does not support
-     returns `422` from `POST /compute/pools`.
-   - Agent lifecycle and refcounting per § 3.4.3: an
-     `agent_refcount` column on `compute_nodes`, mutated
-     transactionally with `agents` rows; `POST /agents` decides
-     reuse-vs-create from the pool's flags + the live refcount;
-     `DELETE /agents/{id}` decrements and (when
-     `node_reuse = false`) destroys the node.
-   - Pool runtime rehydration per § 6.1: every `compute_pools` row
-     is reconstructed at startup before the listener binds; create
-     is synchronous; failures park the row in `errored` state.
-     0.4 ships with the in-memory `SessionStore` only.
-   - Agent supervisor boot contract per
-     [`docs/design/protocol.md`](./docs/design/protocol.md) § 2.4:
-     `OVERACP_*` environment variables only, agent JWTs minted with
-     a 30-day TTL, providers forward extra `NodeSpec.env` verbatim.
-   - Streaming scope is intentionally narrow: one-shot
-     `POST /compute/pools/{pool}/nodes/{id}/exec`, and
-     non-streaming completions emitting one `stream/textDelta`
-     followed by a turn terminator. Streaming exec and streaming
-     completions are non-breaking future work.
-   - The existing tunnel/dispatcher/LLM proxy carried over;
-     `SessionStore`, `QuotaPolicy`, `ToolHost`, and `Authenticator`
-     traits; secret references in pool configs.
-
-   Out of 0.4 (tracked in [`TODO.md`](./TODO.md) as 0.4 non-blockers):
-   JWT rotation, SQLite `SessionStore`, the idle reaper for reusable
-   nodes, `max_nodes` / `idle_ttl_s` enforcement, streaming exec, and
-   streaming completions.
-6. **0.5 — production providers + demo** —
-   `overacp-compute-docker`, `overacp-compute-morph`,
-   `overacp-workspace-gcs`, `overacp-workspace-s3`. End-to-end demo:
-   `cargo run`, then `curl POST /compute/pools`, then
-   `POST /agents`, then `POST /agents/{id}/messages`.
-7. **0.6 — `overacp-tools-mcp` + Overfolder cutover** — controlplane
-   ships its MCP `ToolHost` adapter; Overfolder's `controlplane`
-   shrinks to the Postgres `SessionStore`, the Telegram channel, and
-   the Overslash auth provider. Morph integration leaves Overfolder
-   and lands here as `overacp-compute-morph`. Archive
-   `overfolder/overloop`.
-8. **1.0 — protocol + REST freeze** — semver-stable wire format and
-   v1 REST surface.
-
-## Resolved decisions
-
-These were "open questions" earlier; the design docs now pin them
-down. They are listed here so the SPEC reads as the current
-position.
-
-- **Protocol method naming.** Borrow Zed/Anthropic ACP names where
-  they overlap (`initialize`, `session/message`); borrow MCP names
-  for the tool surface (`tools/list`, `tools/call`); use over/ACP
-  names for everything else. Per-method classification in
-  [`docs/design/protocol.md`](./docs/design/protocol.md) § 3.
-- **Tool model.** `ToolHost` is the trait. Tools reach the agent
-  through three controlplane-mediated sources:
-  1. **ACP-tunnelled**: the controlplane runs MCP clients itself
-     and re-exposes them through `ToolHost` as
-     `tools/list` / `tools/call` over the ACP tunnel. Default and
-     recommended.
-  2. **Agent-side MCP descriptors**: the controlplane sends MCP
-     server descriptors (URL or stdio command, headers, short-lived
-     credentials) in the `initialize` response and the agent
-     connects to them with its own MCP client. The controlplane
-     remains authoritative; deployments that want zero agent-side
-     MCP set the descriptor list to empty.
-  3. **Supervisor-injected**: `overacp-agent` passes a stdio/HTTP
-     MCP descriptor to the child loop via env var or first-line
-     handshake. Use case: sandbox-local helpers (LSP, fs proxies)
-     that should not round-trip through the controlplane.
-
-  Tool names are namespaced per source (`builtin/`, `injected/`,
-  `acp/`, `mcp/<server>/`).
-- **Workspace sync.** Belongs to the agent supervisor, not the
-  controlplane. Shipped as a per-backend crate (`overacp-workspace-gcs`,
-  `overacp-workspace-s3`, `overacp-workspace-rclone`, ...) implementing
-  `WorkspaceSync`. The controlplane only persists the descriptor on
-  the agent record. Full design in
-  [`docs/design/workspace-sync.md`](./docs/design/workspace-sync.md).
-- **Compute model.** Operators register *compute pools* (named
-  configured instances of a `ComputeProvider`) over a Kafka-Connect-style
-  REST API. Agents are pinned to a pool at creation and the
-  controlplane records `(pool, node_id)` on every agent. Provider
-  credentials never leave the controlplane. Full design in
-  [`docs/design/controlplane.md`](./docs/design/controlplane.md).
-
 ## Open questions
 
-- **Multi-agent orchestration.** A parent agent spawning child
-  agents on new compute nodes is expressible as a `ComputeProvider`
-  call inside `tools/call`, but no worked example exists yet. The
-  REST surface in [`docs/design/controlplane.md`](./docs/design/controlplane.md)
-  § 3.4 makes this *possible* (agents are top-level resources); the
-  product pattern is open.
-- **Streaming exec on compute nodes.** v1 `POST .../exec` is one-shot.
-  Streaming exec is wanted but the wire shape is undecided (SSE? a
-  second WebSocket route? piggyback on the existing tunnel?).
-- **Cross-pool fair-share / scheduling.** Pools today are opaque;
-  bin-packing across pools is a future scheduling layer.
+- **Reconnect & redelivery semantics.** The current design holds a
+  bounded in-memory `MessageQueue` per agent for pushes that arrive
+  while the tunnel is disconnected. Lost on broker restart; operator
+  re-POSTs are the recovery path. A persistent queue (Redis stream,
+  NATS jetstream) is a future option, decided once a real
+  multi-replica deployment lands.
+- **Multi-replica routing.** Single-replica works out of the box.
+  Multi-replica needs either sticky LB routing on `agent_id` or a
+  shared registry. Either is feasible behind the existing
+  `AgentRegistry` interface; the call gets made when needed.
+- **`turn/end` vs webhook.** Currently a notification fanned out
+  over SSE for the operator to consume. Some operators may prefer a
+  push webhook (HTTP POST from the broker to a configured URL on
+  every `turn/end`). Add the webhook hook if and when an operator
+  asks for it.
+- **History scrollback.** Recommendation is to expose history search
+  as a tool via `tools/call`, not to add a `history/fetch` protocol
+  method. Revisit if multiple operators end up reimplementing the
+  same scrollback shape.
+- **`AgentAdapter` plurality.** First-party adapters are `overloop`
+  only. Adapters for `claude-code` (TypeScript subprocess) and
+  `codex` (Rust crate) are deferred until there is concrete demand.
