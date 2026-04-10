@@ -29,13 +29,13 @@ pub struct TunnelContext {
 /// and runs the read loop on the current task; returns when the socket
 /// closes.
 pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) {
-    let session_id = claims.conv;
+    let agent_id = claims.sub;
     let (mut ws_tx, mut ws_rx) = ws.split();
 
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
     ctx.sessions.insert(
-        session_id,
+        agent_id,
         TunnelHandle {
             tx,
             claims: claims.clone(),
@@ -44,7 +44,7 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
         },
     );
 
-    info!(%session_id, user = %claims.user, "tunnel connected");
+    info!(%agent_id, role = %claims.role, "tunnel connected");
 
     // Periodic WS ping. Long-poll proxies (e.g. cloudflared) close
     // idle WebSockets after ~100s, so 20s gives plenty of headroom.
@@ -83,7 +83,7 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
     while let Some(Ok(msg)) = ws_rx.next().await {
         match msg {
             Message::Text(text) => {
-                if let Some(mut handle) = ctx.sessions.get_mut(&session_id) {
+                if let Some(mut handle) = ctx.sessions.get_mut(&agent_id) {
                     handle.last_activity = Instant::now();
                 }
 
@@ -94,26 +94,26 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
                     || text.contains("\"turn/save\"")
                     || text.contains("\"heartbeat\"")
                 {
-                    let sender = ctx.stream_broker.sender_for(session_id);
+                    let sender = ctx.stream_broker.sender_for(agent_id);
                     let _ = sender.send(text.clone());
                 }
 
                 if let Some(response) = handle_message(&text, &ctx).await {
-                    if let Some(handle) = ctx.sessions.get(&session_id) {
+                    if let Some(handle) = ctx.sessions.get(&agent_id) {
                         let _ = handle.tx.send(response);
                     }
                 }
             }
             Message::Close(_) => {
-                info!(%session_id, "tunnel closed by client");
+                info!(%agent_id, "tunnel closed by client");
                 break;
             }
             _ => {}
         }
     }
 
-    ctx.sessions.remove(&session_id);
+    ctx.sessions.remove(&agent_id);
     ping_task.abort();
     write_task.abort();
-    info!(%session_id, "tunnel disconnected");
+    info!(%agent_id, "tunnel disconnected");
 }

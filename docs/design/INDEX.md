@@ -13,10 +13,11 @@ For the high-level architecture and milestone roadmap see
   JWT session claims, JSON-RPC method catalogue, shared payload types,
   schema-discipline rules, and the resolved naming policy. The
   `overacp-protocol` crate is the Rust expression of this document.
-- [`controlplane.md`](./controlplane.md) — controlplane architecture:
-  the `ComputeProvider` trait, the Kafka-Connect-shaped REST API for
-  managing compute pools, agent lifecycle, and the REST adapters
-  over the wire protocol. Drives milestone 0.4.
+- [`controlplane.md`](./controlplane.md) — **superseded.** Historical
+  controlplane architecture: `SessionStore`, `ComputeProvider`, and
+  the Kafka-Connect-shaped REST API for managing compute pools and
+  agent lifecycle. Replaced by the stateless message broker model in
+  [`SPEC.md`](../../SPEC.md). Kept for context only.
 - [`workspace-sync.md`](./workspace-sync.md) — pluggable workspace
   hydration and persistence: where it lives in the architecture
   (agent supervisor, not controlplane), the `WorkspaceSync` trait,

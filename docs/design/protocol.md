@@ -14,23 +14,24 @@ For a higher-level architectural picture see [`SPEC.md`](../../SPEC.md).
 
 ## 1. Transport
 
-A single WebSocket connection per session, opened by the agent and
+A single WebSocket connection per agent, opened by the agent and
 terminated by the server. URL shape:
 
 ```
-wss://<server-host>/tunnel/<session-id>
+wss://<server-host>/tunnel/<agent-id>
 Authorization: Bearer <jwt>
 ```
 
-The `<session-id>` is the conversation UUID. The agent obtains it by
-decoding the `conv` claim from its JWT *without* signature
-verification (`overacp_protocol::jwt::peek_claims_unverified`); the
-server still validates the bearer token authoritatively when accepting
-the upgrade.
+The `<agent-id>` is the agent UUID and matches the `sub` claim of the
+JWT. The agent obtains it from its boot environment
+(`OVERACP_AGENT_ID`); the server validates the bearer token
+authoritatively at upgrade time and rejects the connection if the
+JWT's `sub` does not match the path, or if the token does not carry
+the `agent` role.
 
-Reconnects use exponential backoff (1s → 30s, capped). The session
+Reconnects use exponential backoff (1s → 30s, capped). The agent
 identifier is stable across reconnects, so the server is expected to
-preserve session state and resume streaming on a fresh tunnel.
+restore the agent's routing state on a fresh tunnel.
 
 ### 1.1 Frame format
 
@@ -58,13 +59,23 @@ short-lived JWT. The crate exposes `Claims`, `mint_token`,
 
 ### 2.1 Claims
 
-| Field  | Type   | Meaning                                            |
-|--------|--------|----------------------------------------------------|
-| `sub`  | UUID   | Agent identity (subject).                          |
-| `user` | UUID   | User identity.                                     |
-| `conv` | UUID   | Conversation ID this token is scoped to.          |
-| `exp`  | i64    | Expiration as a Unix timestamp.                    |
-| `iss`  | string | Issuer string. Must match what the server expects. |
+| Field  | Type        | Meaning                                                              |
+|--------|-------------|----------------------------------------------------------------------|
+| `sub`  | UUID        | Subject. For `agent` tokens this is the `agent_id` (routing key). For `admin` tokens this is the operator identity. |
+| `role` | string      | `"admin"` or `"agent"`. Decides which routes the token can hit.      |
+| `user` | UUID? (opt) | Optional opaque user identifier. Present only on agent tokens when the operator chooses to forward it. The broker never inspects it. |
+| `exp`  | i64         | Expiration as a Unix timestamp.                                      |
+| `iss`  | string      | Issuer string. Must match what the server expects.                   |
+
+The broker has exactly two token types:
+
+- **Admin JWT** — held by the operator backend. Full access to every
+  REST endpoint, can mint agent tokens via `POST /tokens`. Cannot
+  hold a tunnel.
+- **Agent JWT** — held by the agent process inside the compute
+  environment, and optionally by clients (web frontend) for a
+  specific agent. Scoped to a single `agent_id`; can hold the
+  matching tunnel and call the agent-scoped REST endpoints.
 
 over/ACP intentionally has **no tier, plan, or entitlement claim** in
 the protocol. Quota and tier policy belong to the deployment, not the
@@ -91,15 +102,14 @@ multi-tenant deployment described in `SPEC.md`.
 The `overacp-agent` supervisor is configured **exclusively through
 environment variables**. There is no config file, no CLI flags
 beyond `--help`/`--version`, and no positional arguments. The
-controlplane populates these variables on `NodeSpec.env` when it
-calls `ComputeProvider::create_node`; providers MUST forward them
-verbatim to the agent process.
+operator (or whichever orchestrator launches the compute environment)
+populates these variables before starting the supervisor process.
 
 | Variable | Required | Description |
 |---|---|---|
-| `OVERACP_TUNNEL_URL` | yes | Full WebSocket URL including the conversation UUID path, e.g. `wss://server/tunnel/<conv_uuid>`. |
+| `OVERACP_TUNNEL_URL` | yes | Full WebSocket URL including the agent UUID path, e.g. `wss://server/tunnel/<agent_id>`. |
 | `OVERACP_JWT` | yes | Bearer token for the WebSocket upgrade and the LLM proxy. See § 2.1 for the claims. |
-| `OVERACP_AGENT_ID` | yes | The controlplane's `agents.id` for this supervisor process. Echoed in logs and the `sub` claim. |
+| `OVERACP_AGENT_ID` | yes | The agent's unique identifier. Must match the JWT `sub` claim and the `<agent_id>` in the tunnel URL. Echoed in logs. |
 | `OVERACP_ADAPTER` | no  | Which `AgentAdapter` to load. Defaults to `loop`. |
 | `OVERACP_WORKSPACE_DIR` | no | Working directory for the child agent process. Defaults to the supervisor's launch CWD. There is no hardcoded `/workspace`. |
 | `OVERACP_RECONNECT_BACKOFF_MS` | no | Test override for the reconnect backoff base. |

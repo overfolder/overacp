@@ -1,14 +1,18 @@
 //! JSON-RPC 2.0 method dispatch for the over/ACP tunnel.
 //!
 //! Method names are sourced from `docs/design/protocol.md` § 3.
+//!
+//! `initialize`, `tools/call`, `turn/save`, and `poll/newMessages`
+//! currently return a 1503 "awaiting hook integration" error: the
+//! `Claims` shape no longer carries the controlplane-era conversation
+//! id these handlers depended on, and the operator hooks
+//! (`BootProvider`, `ToolHost`, `QuotaPolicy`) that will replace them
+//! have not landed yet.
 
 use serde_json::{json, Value};
 use tracing::{debug, warn};
 
-use crate::store::StoreError;
 use crate::tunnel::run::TunnelContext;
-
-const POLL_LIMIT: usize = 10;
 
 /// Dispatch a single JSON-RPC message from the agent.
 ///
@@ -25,29 +29,25 @@ pub async fn handle_message(text: &str, ctx: &TunnelContext) -> Option<String> {
 
     let method = parsed.get("method")?.as_str()?;
     let id = parsed.get("id").cloned();
-    let params = parsed.get("params").cloned().unwrap_or(Value::Null);
 
     debug!(method, has_id = id.is_some(), "tunnel message");
 
-    let session_id = ctx.claims.conv;
+    let agent_id = ctx.claims.sub;
 
     match method {
-        "initialize" => Some(jsonrpc_response(id?, handle_initialize(ctx).await)),
+        "initialize" => Some(jsonrpc_response(id?, awaiting_hooks("initialize"))),
         "tools/list" => Some(jsonrpc_response(id?, Ok(json!({ "tools": [] })))),
-        "tools/call" => Some(jsonrpc_response(
-            id?,
-            Err((-32601, "tools/call not yet implemented".into())),
-        )),
-        "turn/save" => Some(jsonrpc_response(id?, handle_turn_save(ctx, &params).await)),
+        "tools/call" => Some(jsonrpc_response(id?, awaiting_hooks("tools/call"))),
+        "turn/save" => Some(jsonrpc_response(id?, awaiting_hooks("turn/save"))),
         "quota/check" => Some(jsonrpc_response(id?, Ok(json!({ "allowed": true })))),
         "quota/update" => Some(jsonrpc_response(id?, Ok(json!({})))),
-        "poll/newMessages" => Some(jsonrpc_response(id?, handle_poll(ctx).await)),
+        "poll/newMessages" => Some(jsonrpc_response(id?, awaiting_hooks("poll/newMessages"))),
 
         // Notifications — already fanned out to the broker by the read
         // loop. Nothing to respond with.
         "stream/textDelta" | "stream/activity" | "stream/toolCall" | "stream/toolResult"
         | "session/message" | "heartbeat" => {
-            debug!(method, %session_id, "tunnel notification");
+            debug!(method, %agent_id, "tunnel notification");
             None
         }
 
@@ -58,88 +58,13 @@ pub async fn handle_message(text: &str, ctx: &TunnelContext) -> Option<String> {
     }
 }
 
-async fn handle_initialize(ctx: &TunnelContext) -> Result<Value, (i32, String)> {
-    let conv_id = ctx.claims.conv;
-    let conv = ctx
-        .store
-        .get_conversation(conv_id)
-        .await
-        .map_err(store_err)?;
-    if conv.is_none() {
-        return Err((1404, format!("conversation {conv_id} not found")));
-    }
-    let messages = ctx
-        .store
-        .list_messages(conv_id, None)
-        .await
-        .map_err(store_err)?;
-    let recent: Vec<_> = messages
-        .iter()
-        .rev()
-        .take(POLL_LIMIT)
-        .cloned()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    Ok(json!({
-        "system_prompt": "",
-        "messages": recent,
-        "conversation_id": conv_id,
-        "tools_config": {},
-    }))
-}
-
-async fn handle_turn_save(ctx: &TunnelContext, params: &Value) -> Result<Value, (i32, String)> {
-    let conv_id = ctx.claims.conv;
-    let messages = params
-        .get("messages")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    for m in messages {
-        let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("user");
-        let content = m.get("content").cloned().unwrap_or(Value::Null);
-        ctx.store
-            .append_message(conv_id, role, content)
-            .await
-            .map_err(store_err)?;
-    }
-    Ok(json!({}))
-}
-
-async fn handle_poll(ctx: &TunnelContext) -> Result<Value, (i32, String)> {
-    let conv_id = ctx.claims.conv;
-    let cursor = {
-        let handle = ctx
-            .sessions
-            .get(&conv_id)
-            .ok_or((1500, "no session".into()))?;
-        let guard = handle.poll_cursor.lock().await;
-        let cur = *guard;
-        drop(guard);
-        drop(handle);
-        cur
-    };
-    let msgs = ctx
-        .store
-        .list_messages(conv_id, cursor)
-        .await
-        .map_err(store_err)?;
-    let limited: Vec<_> = msgs.into_iter().take(POLL_LIMIT).collect();
-    if let Some(last) = limited.last() {
-        if let Some(handle) = ctx.sessions.get(&conv_id) {
-            *handle.poll_cursor.lock().await = Some(last.id);
-        }
-    }
-    Ok(json!({ "messages": limited }))
-}
-
-fn store_err(e: StoreError) -> (i32, String) {
-    match e {
-        StoreError::NotFound => (1404, "not found".into()),
-        other => (1500, other.to_string()),
-    }
+/// Error returned by handlers whose operator hook is not yet wired
+/// up. Code 1503 maps to HTTP 503-ish "service in transitional state".
+fn awaiting_hooks(method: &str) -> Result<Value, (i32, String)> {
+    Err((
+        1503,
+        format!("{method} awaiting hook integration"),
+    ))
 }
 
 /// Format a JSON-RPC 2.0 response.
@@ -191,15 +116,9 @@ mod tests {
     use crate::tunnel::run::TunnelContext;
     use crate::tunnel::session_manager::new_session_manager;
 
-    fn ctx_with(conv: Uuid) -> TunnelContext {
+    fn ctx_with(agent_id: Uuid) -> TunnelContext {
         TunnelContext {
-            claims: Claims {
-                sub: Uuid::new_v4(),
-                user: Uuid::new_v4(),
-                conv,
-                exp: 0,
-                iss: "test".into(),
-            },
+            claims: Claims::agent(agent_id, Some(Uuid::new_v4()), 60, "test"),
             store: Arc::new(InMemoryStore::new()),
             sessions: new_session_manager(),
             stream_broker: StreamBroker::new(),
@@ -231,5 +150,19 @@ mod tests {
         let ctx = ctx_with(Uuid::new_v4());
         let resp = handle_message(r#"{"jsonrpc":"2.0","method":"heartbeat"}"#, &ctx).await;
         assert!(resp.is_none());
+    }
+
+    #[tokio::test]
+    async fn initialize_returns_transitional_error() {
+        let ctx = ctx_with(Uuid::new_v4());
+        let resp = handle_message(r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#, &ctx)
+            .await
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(parsed["error"]["code"], 1503);
+        assert!(parsed["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("initialize"));
     }
 }

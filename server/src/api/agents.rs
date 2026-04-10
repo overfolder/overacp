@@ -1,18 +1,12 @@
 //! axum routes for `/agents/{id}/...` — the REST adapters over the
-//! JSON-RPC tunnel from `docs/design/controlplane.md` § 3.5.
+//! JSON-RPC tunnel.
 //!
-//! These sit at the root (no `/api/v1` prefix) and key off the
-//! `agent_id` recorded in the agents table. Each handler resolves
-//! the agent to its conversation id, which is also the tunnel
-//! session id, and dispatches through:
-//!
-//! - the `SessionStore` (messages table) for writes/reads,
-//! - the `SessionManager` (live tunnels) to poke the agent with a
-//!   `session/message` or cancel notification, and
-//! - the `StreamBroker` (in-memory fan-out) for SSE.
-//!
-//! Agent creation (§ 3.4) is a separate concern; these handlers
-//! only require that `store.get_agent(id)` returns a record.
+//! These handlers will be rewritten in Phase 4b of the broker refactor
+//! to push `session/message` directly down the tunnel and key the
+//! session table on `agent_id` (the JWT `sub`). Right now they still
+//! call into the controlplane-era `SessionStore`; the in-place
+//! `Claims` shape change in Phase 1 left this surface compiling but
+//! transitional. See `SPEC.md` for the target architecture.
 
 use std::convert::Infallible;
 use std::time::Duration;
@@ -229,13 +223,7 @@ mod tests {
             conv,
             TunnelHandle {
                 tx,
-                claims: Claims {
-                    sub: Uuid::new_v4(),
-                    user: Uuid::new_v4(),
-                    conv,
-                    exp: 0,
-                    iss: "test".into(),
-                },
+                claims: Claims::agent(Uuid::new_v4(), Some(Uuid::new_v4()), 60, "test"),
                 last_activity: Instant::now(),
                 poll_cursor: Mutex::new(None),
             },

@@ -1,24 +1,32 @@
 # over/ACP — Status
 
-**Updated:** 2026-04-07
+**Updated:** 2026-04-10
 
 ## Current milestone
 
-**0.1 — vendor `loop`** (in progress)
+**Broker refactor (in progress).** The SPEC was rewritten in commits
+59c1b29 and bbaab3f to redefine `overacp-server` as a stateless message
+broker. The code is mid-migration on `refactor/stateless-broker`:
 
-The repo currently contains a single vendored crate, `overloop`, copied
-from `overfolder/overloop`. Workspace wiring is the only structural work
-item at this stage. No protocol, server, or agent crates yet.
+- **Phase 1 (Claims + Authenticator mint)** — landed. JWT `Claims` now
+  carries `{sub, role, user?, exp, iss}`; `Authenticator` gained a
+  `mint` method; the tunnel upgrade path validates the `agent` role
+  and that the JWT `sub` matches the `<agent_id>` segment of the URL.
+  Dispatch handlers that depended on the old `conv` claim
+  (`initialize`, `tools/call`, `turn/save`, `poll/newMessages`)
+  return a transitional 1503 error pending the operator hooks landing
+  in Phase 3. `docs/design/controlplane.md` is now marked
+  `Superseded`.
 
 ## Crates
 
 | Crate | State |
 |---|---|
-| `overloop` | Vendored, builds. Reference agent. |
-| `overacp-compute-core` | Landed. `ComputeProvider` trait + node/exec/log types + `${provider:path:key}` config resolver (env + file). Bundled providers: `local-process` (`providers::local`). |
+| `overloop` | Vendored, builds. Reference agent. Still on the controlplane-era wire shape; migration tracked in `TODO.md` § 0.3.x. |
+| `overacp-compute-core` | Landed as a standalone library. `ComputeProvider` trait + node/exec/log types + `${provider:path:key}` config resolver. The broker no longer depends on it; operators can pull it in directly. |
 | `overacp-protocol` | Not started. |
-| `overacp-agent` | Not started. |
-| `overacp-server` | Scaffolded. `SessionStore` trait + in-memory impl covering pools/nodes/agents/conversations/messages. REST surface for compute providers (§3.1), pools (§3.2), nodes (§3.3), and the agent messaging/SSE/cancel adapters (§3.5) at the root. Agent lifecycle CRUD (§3.4) not yet implemented, so §3.5 endpoints currently require a pre-seeded agent row. |
+| `overacp-agent` | Boot-config crate landed; supervisor + stdio bridge not started. |
+| `overacp-server` | Mid-refactor on `refactor/stateless-broker`. Authentication and tunnel auth gate are on the new broker shape; operator hooks (`BootProvider`, `ToolHost`, `QuotaPolicy`), `AgentRegistry`, `MessageQueue`, and the new REST surface land in subsequent phases. The legacy `SessionStore`, compute REST surface, and HTTP Basic auth still exist on disk and will be removed in Phase 5. |
 | `overacp-tools-mcp` | Not started. |
 | `examples/*` | Not started. |
 
