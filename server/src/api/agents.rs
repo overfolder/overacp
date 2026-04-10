@@ -78,10 +78,10 @@ async fn require_agent(state: &AppState, id: &str) -> Result<Agent, ApiError> {
         .ok_or_else(|| ApiError::NotFound(format!("agent '{id}'")))
 }
 
-/// `POST /agents/{id}/messages` — write a user message into the
-/// conversation table and poke the agent's tunnel with
-/// `session/message`. The agent fetches the body via
-/// `poll/newMessages` exactly as in protocol.md § 3.1.
+/// `POST /agents/{id}/messages` — write the message into the
+/// conversation table (legacy, still here until Phase 5 deletes the
+/// store) and push a `session/message` notification down the agent's
+/// tunnel with the body inline, as in protocol.md § 3.1.
 async fn send_message(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -93,17 +93,21 @@ async fn send_message(
     let agent = require_agent(&state, &id).await?;
     let message = state
         .store
-        .append_message(agent.conversation_id, &req.role, req.content)
+        .append_message(agent.conversation_id, &req.role, req.content.clone())
         .await?;
 
     // Best-effort notify: if the tunnel is currently connected we
-    // emit `session/message`; if it isn't the agent will pick the
-    // message up on its next `poll/newMessages` after reconnect.
+    // emit `session/message` with the body inline. The legacy
+    // routing key here is `agent.conversation_id`; once Phase 4a
+    // lands the registry will key on `agent_id` directly.
     if let Some(handle) = state.sessions.get(&agent.conversation_id) {
         let notif = json!({
             "jsonrpc": "2.0",
             "method": "session/message",
-            "params": { "id": message.id },
+            "params": {
+                "role": req.role,
+                "content": req.content,
+            },
         });
         let _ = handle.tx.send(notif.to_string());
     }

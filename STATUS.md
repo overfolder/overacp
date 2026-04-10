@@ -12,10 +12,7 @@ broker. The code is mid-migration on `refactor/stateless-broker`:
   carries `{sub, role, user?, exp, iss}`; `Authenticator` gained a
   `mint` method; the tunnel upgrade path validates the `agent` role
   and that the JWT `sub` matches the `<agent_id>` segment of the URL.
-  Dispatch handlers that depended on the old `conv` claim
-  (`initialize`, `tools/call`, `turn/save`, `poll/newMessages`)
-  return a transitional 1503 error until Phase 3 wires them to the
-  hooks. `docs/design/controlplane.md` is now marked `Superseded`.
+  `docs/design/controlplane.md` is now marked `Superseded`.
 - **Phase 2 (operator hook traits)** — landed. New `hooks` module
   exports `BootProvider`, `ToolHost`, and `QuotaPolicy` trait
   contracts plus stub default implementations
@@ -25,6 +22,15 @@ broker. The code is mid-migration on `refactor/stateless-broker`:
   `with_quota_policy`) for operator-supplied impls. Defaults are
   installed automatically so the reference server still boots
   end-to-end without an operator stack.
+- **Phase 3 (dispatch rewrite)** — landed. Tunnel dispatch now
+  delegates `initialize`, `tools/list`, `tools/call`, `quota/check`,
+  and `quota/update` to the hooks introduced in Phase 2. The legacy
+  `turn/save` request and `poll/newMessages` request are gone;
+  `turn/end` is the new fire-and-forget agent → server notification
+  for completed turns, and `session/cancel` joins `session/message`
+  as a server → agent push. `TunnelContext` carries the hooks and
+  `routes::tunnel_upgrade` constructs it from `AppState`. The legacy
+  `SessionStore` is no longer touched by the dispatch table.
 
 ## Crates
 

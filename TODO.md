@@ -47,8 +47,11 @@ crate landed. All items block calling the loop "protocol-conformant".
       constants instead of hard-coding strings in `loop/src/acp.rs`.
 - [ ] Loop's `Message` / `InitializeResult` types are replaced by the
       ones in `overacp_protocol::messages`.
-- [ ] On `session/message` notification, loop fetches the message body
-      via `poll/newMessages` instead of re-running `initialize`.
+- [ ] Loop reads the message body inline from the `session/message`
+      notification's `params` field instead of polling. The
+      `poll/newMessages` method has been removed from the protocol.
+- [ ] Loop emits `turn/end` (fire-and-forget notification) at the
+      end of each turn instead of the old `turn/save` request.
 - [ ] Loop emits `stream/toolCall` and `stream/toolResult`
       notifications around every tool invocation.
 - [ ] **Tool sources unified into one registry**, ordered:

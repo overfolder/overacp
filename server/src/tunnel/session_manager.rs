@@ -16,7 +16,9 @@ pub struct TunnelHandle {
     pub claims: Claims,
     /// Last activity timestamp for idle detection.
     pub last_activity: Instant,
-    /// Cursor for `poll/newMessages` — id of the last message we returned.
+    /// Legacy cursor field used by the controlplane-era message poll.
+    /// Will be removed alongside `SessionManager` in Phase 4a of the
+    /// broker refactor.
     pub poll_cursor: Mutex<Option<Uuid>>,
 }
 

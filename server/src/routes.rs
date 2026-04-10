@@ -65,6 +65,9 @@ async fn tunnel_upgrade(
         store: state.store.clone(),
         sessions: state.sessions.clone(),
         stream_broker: state.stream_broker.clone(),
+        boot_provider: state.boot_provider.clone(),
+        tool_host: state.tool_host.clone(),
+        quota_policy: state.quota_policy.clone(),
     });
 
     ws.on_upgrade(move |socket| run_tunnel(socket, claims, ctx))

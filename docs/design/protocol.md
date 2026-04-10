@@ -142,12 +142,12 @@ Each method is tagged with its **origin**:
 |---------------------|------------|-----------------|--------------|
 | `initialize`        | ACP        | agent → server  | request      |
 | `session/message`   | extension  | server → agent  | notification |
+| `session/cancel`    | extension  | server → agent  | notification |
 | `tools/list`        | MCP        | agent → server  | request      |
 | `tools/call`        | MCP        | agent → server  | request      |
-| `turn/save`         | extension  | agent → server  | request      |
 | `quota/check`       | extension  | agent → server  | request      |
 | `quota/update`      | extension  | agent → server  | request      |
-| `poll/newMessages`  | extension  | agent → server  | request      |
+| `turn/end`          | extension  | agent → server  | notification |
 | `stream/textDelta`  | extension  | agent → server  | notification |
 | `stream/activity`   | extension  | agent → server  | notification |
 | `stream/toolCall`   | extension  | agent → server  | notification |
@@ -156,27 +156,33 @@ Each method is tagged with its **origin**:
 
 ### 3.1 Lifecycle
 
-`initialize` is the first call after the tunnel is up. The server
-returns the system prompt, the recent conversation history, the
-conversation ID, and an opaque `tools_config` blob the agent will
-treat as pass-through state.
+`initialize` is the first call after the tunnel is up, and is called
+exactly once per cold-start of the agent (not per turn). The broker
+delegates to the operator's `BootProvider` hook, which returns the
+system prompt, recent conversation history, and an opaque
+`tools_config` blob the agent will treat as pass-through state. The
+broker itself never inspects the response.
 
 ```jsonc
 // initialize response
 {
   "system_prompt": "You are a helpful assistant.",
   "messages": [ ...prior turns... ],
-  "conversation_id": "aaaa...-eeee",
   "tools_config": {}
 }
 ```
 
-`session/message` is an over/ACP extension notification from the
-server telling the agent that a new user message is available; the
-agent is expected to start its turn loop. The actual message body is
-fetched via `poll/newMessages`. Conceptually similar to ACP's
-`session/prompt` but the payload shape differs and the body lookup
-is decoupled.
+`session/message` is a server → agent notification that delivers a
+user message to a connected agent. The body travels **inline in the
+notification** — there is no separate poll round-trip. The agent
+appends the message to its in-memory history and starts its turn
+loop. (Buffering of pushes that arrive while the tunnel is
+disconnected is planned but not yet implemented; see STATUS.md for
+the current phase of the broker refactor.)
+
+`session/cancel` is a server → agent notification that asks the
+agent to abandon its current turn. Pushed by the broker when the
+operator calls `POST /agents/{id}/cancel`.
 
 ### 3.2 Tool surface
 
@@ -189,36 +195,41 @@ directly. This is the "case A" model from `SPEC.md`; the alternative
 of injecting MCP server configs down into the child agent process is
 explicitly out of scope.
 
-### 3.3 Persistence and quota (extensions)
+### 3.3 Turn completion and quota (extensions)
 
-These four methods are over/ACP-specific. No upstream standard
-covers per-conversation persistence or quota signalling, so the
-names are ours.
+These extensions cover end-of-turn signalling and quota/usage
+hooks. No upstream standard covers them, so the names are ours.
 
-`turn/save` persists the messages and usage from a completed turn:
+`turn/end` is a **fire-and-forget notification** that an agent
+emits when it finishes a turn. The broker fans it out to SSE
+subscribers; persisting the turn data is the operator's job (the
+operator's SSE consumer reads `turn/end` frames out of
+`/agents/{id}/stream` and writes them to whatever store it owns).
 
 ```jsonc
-// turn/save request
+// turn/end notification
 {
-  "messages": [
-    { "role": "user", "content": "what's the weather?" },
-    { "role": "assistant", "content": "I'll check." }
-  ],
-  "usage": { "input_tokens": 100, "output_tokens": 50 }
+  "jsonrpc": "2.0",
+  "method": "turn/end",
+  "params": {
+    "messages": [
+      { "role": "user", "content": "what's the weather?" },
+      { "role": "assistant", "content": "I'll check." }
+    ],
+    "usage": { "input_tokens": 100, "output_tokens": 50 }
+  }
 }
 ```
 
-`quota/check` returns `{ "allowed": bool }`. The server's
-`QuotaPolicy` decides; the protocol carries no tier or pricing
-state. Deployments that don't bill at all can return a constant
-`{ "allowed": true }` from a no-op `QuotaPolicy`.
+`quota/check` returns `{ "allowed": bool }`. The broker delegates
+to the operator's `QuotaPolicy::check`; the protocol carries no
+tier or pricing state. Deployments that don't bill at all can return
+a constant `{ "allowed": true }` from a no-op `QuotaPolicy`.
 
-`quota/update` reports token usage to be added to the user's running
-totals. The response is an empty struct (not `()`) so it can grow
-fields later without breaking the wire format.
-
-`poll/newMessages` returns any user messages that have arrived since
-the last poll. The reference server returns up to ten at a time.
+`quota/update` reports usage to be recorded against the agent's
+running totals. The broker delegates to `QuotaPolicy::record`. The
+response is an empty struct (not `()`) so it can grow fields later
+without breaking the wire format.
 
 ### 3.4 Streaming notifications (extensions)
 
@@ -299,12 +310,13 @@ external implementations plug in without a translation layer:
   speak ACP natively, so these names let an adapter crate be a thin
   passthrough.
 - **MCP names** (`tools/list`, `tools/call`) come from the Model
-  Context Protocol. The controlplane runs MCP clients on behalf of
-  the agent and re-exposes their tools verbatim, so the wire names
-  match upstream too.
+  Context Protocol. The broker delegates to a `ToolHost` hook which
+  typically fans out to MCP clients on behalf of the agent and
+  re-exposes their tools verbatim, so the wire names match upstream
+  too.
 - **over/ACP extensions** keep names that fit the surrounding
-  semantics (`turn/save`, `quota/*`, `poll/newMessages`, `stream/*`,
-  `heartbeat`, `session/message`). These have no upstream
+  semantics (`turn/end`, `quota/*`, `stream/*`, `heartbeat`,
+  `session/message`, `session/cancel`). These have no upstream
   equivalent.
 
 The per-method origin column in § 3 makes the classification

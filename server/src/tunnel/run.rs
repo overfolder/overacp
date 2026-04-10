@@ -10,6 +10,7 @@ use tokio::time;
 use tracing::info;
 
 use crate::auth::Claims;
+use crate::hooks::{BootProvider, QuotaPolicy, ToolHost};
 use crate::store::SessionStore;
 use crate::tunnel::broker::StreamBroker;
 use crate::tunnel::dispatch::handle_message;
@@ -17,12 +18,27 @@ use crate::tunnel::session_manager::{SessionManager, TunnelHandle};
 
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 
-/// Context passed to message handlers.
+/// Context passed to message handlers. Carries the agent's claims,
+/// the in-memory routing state (`sessions`, `stream_broker`), and
+/// the three operator hooks the dispatch table delegates to
+/// (`BootProvider`, `ToolHost`, `QuotaPolicy`).
+///
+/// The fourth hook from the SPEC, `Authenticator`, lives on
+/// `AppState` and is consumed by the upgrade handler in
+/// [`crate::routes`] before the context is built — by the time
+/// dispatch runs the JWT has already been validated.
+///
+/// `store` is here only because the legacy `/agents/{id}/...` REST
+/// surface (which still uses `SessionStore`) hangs off `AppState`
+/// during the broker refactor. The tunnel itself does not read it.
 pub struct TunnelContext {
     pub claims: Claims,
     pub store: Arc<dyn SessionStore>,
     pub sessions: SessionManager,
     pub stream_broker: Arc<StreamBroker>,
+    pub boot_provider: Arc<dyn BootProvider>,
+    pub tool_host: Arc<dyn ToolHost>,
+    pub quota_policy: Arc<dyn QuotaPolicy>,
 }
 
 /// Run the tunnel for a connected WebSocket. Spawns ping + write tasks
@@ -87,11 +103,12 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
                     handle.last_activity = Instant::now();
                 }
 
-                // Best-effort fan-out of stream/* notifications to the
-                // in-memory broker. Cheap string sniff to avoid parsing
-                // every frame twice.
+                // Best-effort fan-out of stream/* and turn/end
+                // notifications to the in-memory broker so SSE
+                // subscribers receive them. Cheap string sniff to
+                // avoid parsing every frame twice.
                 if text.contains("\"stream/")
-                    || text.contains("\"turn/save\"")
+                    || text.contains("\"turn/end\"")
                     || text.contains("\"heartbeat\"")
                 {
                     let sender = ctx.stream_broker.sender_for(agent_id);
