@@ -257,45 +257,6 @@ crate's:
   history is reachable as a tool (`tools/call recall_history(...)`),
   not as a protocol method.
 
-## Roadmap
-
-The roadmap is shaped around landing the broker core and getting the
-reference loop talking to it. Each milestone is small enough to ship
-behind a single acceptance test.
-
-1. **0.1 — vendor `loop`** *(landed)* — copy the reference agent in
-   as the `overloop` crate, set up the workspace.
-2. **0.2 — `overacp-protocol`** — extract pure wire types and
-   method-name constants from the existing server code into a
-   tokio-free crate. JWT helpers. Round-trip fixture tests against
-   captured JSON.
-3. **0.3 — `overacp-agent`** — WS client with reconnect/backoff,
-   child-process supervisor, stdio bridge. `AgentAdapter` trait so
-   the supervised child can be any ACP-speaking harness; built-in
-   adapter for `overloop`.
-4. **0.3.x — `overloop` migration to the protocol crate** — switch
-   from hard-coded JSON-RPC strings to `overacp-protocol::methods`,
-   adopt the new push-shaped `session/message`, drop
-   `poll/newMessages`, emit `turn/end` instead of `turn/save`.
-5. **0.4 — `overacp-server`: the broker** — stateless tunnel
-   terminator + REST adapters + the four traits with no-op default
-   impls. Acceptance gate is a single end-to-end test
-   (`server/tests/acceptance_0_4.rs`) that runs the broker in-process,
-   spawns `overloop` as a subprocess, posts to
-   `/agents/X/messages`, and asserts a `stream/textDelta` arrives on
-   `/agents/X/stream`. **No compute provider, no `SessionStore`, no
-   Postgres** — those are all out of scope for the broker itself.
-6. **0.5 — production hardening** — reconnect/redelivery semantics
-   for the message queue, multi-replica routing options (sticky LB
-   on `agent_id` or shared registry via Redis/NATS), operator REST
-   stability, a real `ToolHost` reference impl wired to MCP fan-out.
-7. **0.6 — overfolder cutover** — overfolder ships its own
-   `BootProvider` and `QuotaPolicy` impls and uses the broker for
-   backend ↔ agent-runner communication. overfolder keeps its
-   existing Morph integration; the broker doesn't see it.
-8. **1.0 — protocol + REST freeze** — semver-stable wire format and
-   v1 REST surface.
-
 ## Documentation rule
 
 `SPEC.md` is the index. It must describe **everything** about the
