@@ -33,6 +33,12 @@ pub struct AppState {
     /// Basic auth (which carries no user identity). `None` means
     /// control-plane handlers that need a user must reject the call.
     pub default_user_id: Option<Uuid>,
+    /// External WebSocket base URL handed to spawned agents as the
+    /// `OVERACP_TUNNEL_URL` env var prefix (e.g. `wss://host`). The
+    /// per-conversation suffix `/tunnel/{conv_uuid}` is appended by
+    /// the agent-creation handler. `None` means POST /agents will
+    /// return 503 — see `docs/design/protocol.md` § 2.4.
+    pub tunnel_base_url: Option<String>,
 }
 
 impl AppState {
@@ -50,7 +56,14 @@ impl AppState {
             stream_broker: StreamBroker::new(),
             basic_auth: None,
             default_user_id: None,
+            tunnel_base_url: None,
         }
+    }
+
+    /// Builder: set the external tunnel base URL.
+    pub fn with_tunnel_base_url(mut self, url: impl Into<String>) -> Self {
+        self.tunnel_base_url = Some(url.into());
+        self
     }
 
     /// Builder: attach a loaded htpasswd file for control-plane auth.

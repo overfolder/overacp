@@ -74,6 +74,14 @@ pub fn build_state_from_env() -> Result<AppState, StartupError> {
         ),
     }
 
+    // Optional: external tunnel base URL injected into spawned
+    // agents as `OVERACP_TUNNEL_URL` (per protocol.md § 2.4).
+    if let Ok(raw) = env::var("OVERACP_TUNNEL_BASE_URL") {
+        if !raw.is_empty() {
+            state = state.with_tunnel_base_url(raw);
+        }
+    }
+
     // Optional: default user UUID attributed to control-plane writes.
     if let Ok(raw) = env::var("OVERACP_DEFAULT_USER_ID") {
         if !raw.is_empty() {

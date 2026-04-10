@@ -6,7 +6,7 @@
 //! tunnel code. Per `docs/design/protocol.md` § 2.1, the wire `Claims`
 //! deliberately omit any tier/plan/entitlement field.
 
-use jsonwebtoken::{decode, DecodingKey, Validation};
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -28,10 +28,24 @@ pub struct Claims {
 pub enum AuthError {
     #[error("invalid token: {0}")]
     Invalid(String),
+    #[error("mint failed: {0}")]
+    Mint(String),
 }
 
 pub trait Authenticator: Send + Sync + 'static {
     fn validate(&self, token: &str) -> Result<Claims, AuthError>;
+
+    /// Mint a fresh JWT for an agent. `sub` is the agent identity,
+    /// `user`/`conv` are echoed into the claims, `exp` is a Unix
+    /// timestamp. Per `docs/design/protocol.md` § 2.4 the
+    /// recommended TTL for the agent token is 30 days.
+    fn mint_agent_token(
+        &self,
+        sub: Uuid,
+        user: Uuid,
+        conv: Uuid,
+        exp: i64,
+    ) -> Result<String, AuthError>;
 }
 
 pub struct StaticJwtAuthenticator {
@@ -59,6 +73,28 @@ impl Authenticator for StaticJwtAuthenticator {
         )
         .map_err(|e| AuthError::Invalid(e.to_string()))?;
         Ok(data.claims)
+    }
+
+    fn mint_agent_token(
+        &self,
+        sub: Uuid,
+        user: Uuid,
+        conv: Uuid,
+        exp: i64,
+    ) -> Result<String, AuthError> {
+        let claims = Claims {
+            sub,
+            user,
+            conv,
+            exp,
+            iss: self.issuer.clone(),
+        };
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(self.signing_key.as_bytes()),
+        )
+        .map_err(|e| AuthError::Mint(e.to_string()))
     }
 }
 
