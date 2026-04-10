@@ -5,6 +5,7 @@ pub use startup::{build_state_from_env, StartupError};
 pub mod api;
 pub mod auth;
 pub mod basic_auth;
+pub mod hooks;
 pub mod routes;
 pub mod state;
 pub mod store;
@@ -13,6 +14,10 @@ pub mod tunnel;
 pub use api::{compute_nodes_router, compute_router};
 pub use auth::{AuthError, Authenticator, Claims, StaticJwtAuthenticator};
 pub use basic_auth::{HtpasswdError, HtpasswdFile};
+pub use hooks::{
+    BootError, BootProvider, DefaultBootProvider, DefaultQuotaPolicy, DefaultToolHost, QuotaError,
+    QuotaPolicy, ToolError, ToolHost,
+};
 pub use routes::router;
 pub use state::AppState;
 pub use store::{

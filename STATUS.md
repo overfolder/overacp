@@ -14,9 +14,17 @@ broker. The code is mid-migration on `refactor/stateless-broker`:
   and that the JWT `sub` matches the `<agent_id>` segment of the URL.
   Dispatch handlers that depended on the old `conv` claim
   (`initialize`, `tools/call`, `turn/save`, `poll/newMessages`)
-  return a transitional 1503 error pending the operator hooks landing
-  in Phase 3. `docs/design/controlplane.md` is now marked
-  `Superseded`.
+  return a transitional 1503 error until Phase 3 wires them to the
+  hooks. `docs/design/controlplane.md` is now marked `Superseded`.
+- **Phase 2 (operator hook traits)** — landed. New `hooks` module
+  exports `BootProvider`, `ToolHost`, and `QuotaPolicy` trait
+  contracts plus stub default implementations
+  (`DefaultBootProvider`, `DefaultToolHost`, `DefaultQuotaPolicy`).
+  `AppState` now holds `Arc<dyn ...>` for each hook with builder
+  methods (`with_boot_provider`, `with_tool_host`,
+  `with_quota_policy`) for operator-supplied impls. Defaults are
+  installed automatically so the reference server still boots
+  end-to-end without an operator stack.
 
 ## Crates
 

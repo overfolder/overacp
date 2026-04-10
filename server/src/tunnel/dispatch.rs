@@ -5,9 +5,9 @@
 //! `initialize`, `tools/call`, `turn/save`, and `poll/newMessages`
 //! currently return a 1503 "awaiting hook integration" error: the
 //! `Claims` shape no longer carries the controlplane-era conversation
-//! id these handlers depended on, and the operator hooks
-//! (`BootProvider`, `ToolHost`, `QuotaPolicy`) that will replace them
-//! have not landed yet.
+//! id these handlers depended on. The replacement operator hooks
+//! (`BootProvider`, `ToolHost`, `QuotaPolicy`) live in
+//! [`crate::hooks`] but are not yet wired into this dispatch table.
 
 use serde_json::{json, Value};
 use tracing::{debug, warn};

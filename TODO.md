@@ -88,11 +88,16 @@ Full design in
       `OVERACP_BASIC_AUTH_FILE`. `OVERACP_DEFAULT_USER_ID` supplies the
       user UUID attributed to Basic-auth writes. See
       `docs/design/controlplane.md` § 3.
-- [ ] `QuotaPolicy` trait. Reference impl: no-op (everything allowed).
-- [ ] `ToolHost` trait. Reference impl wired to the `tools/list` /
-      `tools/call` ACP surface (uses the `overacp-tools-mcp`
-      adapter from 0.6 once it lands; until then, in-memory tool
-      registration only).
+- [x] `BootProvider` trait. Reference impl: `DefaultBootProvider`
+      (returns an empty bootstrap). Lives in
+      `server/src/hooks/boot.rs`. Backs `initialize`.
+- [x] `QuotaPolicy` trait. Reference impl: `DefaultQuotaPolicy`
+      (no-op, everything allowed). Lives in
+      `server/src/hooks/quota.rs`.
+- [x] `ToolHost` trait. Reference impl: `DefaultToolHost` (empty
+      catalogue, `call` returns `NotFound`). Lives in
+      `server/src/hooks/tools.rs`. The `overacp-tools-mcp` MCP
+      adapter from 0.6 will be a drop-in replacement.
 
 ### Compute provisioning
 

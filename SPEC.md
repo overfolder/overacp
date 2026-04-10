@@ -346,27 +346,34 @@ method comes from a trait the operator implements:
 
 ```rust
 #[async_trait]
-pub trait BootProvider: Send + Sync {
-    async fn initialize(&self, claims: &Claims) -> Result<InitializeResponse, BootError>;
+pub trait BootProvider: Send + Sync + 'static {
+    async fn initialize(&self, claims: &Claims) -> Result<Value, BootError>;
 }
 
 #[async_trait]
-pub trait ToolHost: Send + Sync {
-    async fn list(&self, claims: &Claims) -> Result<ToolList, ToolError>;
-    async fn call(&self, claims: &Claims, req: ToolCall) -> Result<ToolResult, ToolError>;
+pub trait ToolHost: Send + Sync + 'static {
+    async fn list(&self, claims: &Claims) -> Result<Value, ToolError>;
+    async fn call(&self, claims: &Claims, req: Value) -> Result<Value, ToolError>;
 }
 
 #[async_trait]
-pub trait QuotaPolicy: Send + Sync {
+pub trait QuotaPolicy: Send + Sync + 'static {
     async fn check(&self, claims: &Claims) -> Result<bool, QuotaError>;
-    async fn record(&self, claims: &Claims, usage: Usage) -> Result<(), QuotaError>;
+    async fn record(&self, claims: &Claims, usage: Value) -> Result<(), QuotaError>;
 }
 
-pub trait Authenticator: Send + Sync {
+pub trait Authenticator: Send + Sync + 'static {
     fn validate(&self, token: &str) -> Result<Claims, AuthError>;
     fn mint(&self, claims: &Claims) -> Result<String, AuthError>;
 }
 ```
+
+Hook payloads (`req`, `usage`, and the boot/tools/list responses)
+are intentionally typed as `serde_json::Value`. The broker is
+payload-agnostic — it routes JSON-RPC frames between the agent and
+the operator's hook impl without ever inspecting their contents.
+Operators with stronger typing needs are free to deserialize the
+`Value` into their own structs inside the impl.
 
 Default implementations: `BootProvider` returns an empty bootstrap
 (no system prompt, no history); `ToolHost` returns no tools;
