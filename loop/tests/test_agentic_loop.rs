@@ -499,15 +499,9 @@ async fn test_silence_nudge_injected_after_three_silent_turns() {
                 tool_calls: None,
                 tool_call_id: None,
             },
-            // ToolCalls → continue through the tool-call branch,
-            // but with no tool_calls present so the loop falls
-            // through to the stop-reason match and sees `None` →
-            // which would normally break. Use an unknown
-            // finish_reason (Length-ish) that still counts as
-            // "silent" to keep iterating.
-            //
-            // Actually simpler: emit finish_reason ToolCalls so the
-            // loop `continue`s without breaking.
+            // Emit finish_reason = ToolCalls so the loop `continue`s
+            // past the stop-reason match without breaking, letting
+            // `silent_turns` accumulate across iterations.
             finish_reason: Some(StopReason::ToolCalls),
             usage: Some(Usage {
                 prompt_tokens: 1,

@@ -270,23 +270,14 @@ mod tests {
 
     #[tokio::test]
     async fn run_ends_when_ws_closes_first() {
-        // WS returns an immediate Close frame; stdout is a pipe that
-        // blocks forever. run() must pick the ws branch and return
-        // TunnelClosed.
+        // WS yields an immediate Close frame; the child stdout is a
+        // duplex pipe whose write end is never used, so the stdout
+        // branch of the select blocks forever and the ws branch
+        // wins.
         let ws_frames: Vec<Result<WsMessage, WsError>> = vec![Ok(WsMessage::Close(None))];
         let ws_read = stream::iter(ws_frames);
         let ws_sink = VecSink::default();
         let stdin: Vec<u8> = Vec::new();
-        // `empty()` is an AsyncRead that is immediately
-        // EOF — but we need AsyncBufRead. BufReader wraps it.
-        let stdout = BufReader::new(empty());
-
-        // empty() hits EOF immediately which would win the race. To
-        // force the ws branch to win, use pending() from tokio::io.
-        // tokio::io::empty is immediate EOF; for a "hangs forever"
-        // reader we wrap a never-ready stream. Simplest: a pipe
-        // whose write end is held by this scope and never written.
-        let _ = stdout;
         let (pipe_reader, _pipe_writer) = duplex(64);
         let stdout = BufReader::new(pipe_reader);
 
