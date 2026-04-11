@@ -1,70 +1,29 @@
-//! `overacp-agent` binary entry point.
-//!
-//! The supervisor is configured exclusively through environment
-//! variables (see `docs/design/protocol.md` § 2.4). The only CLI
-//! surface is `--help` / `--version`.
+//! Binary entry point for `overacp-agent`.
 
-use std::env;
-use std::process::ExitCode;
+use anyhow::Result;
+use rustls::crypto::ring;
+use std::io::stderr;
+use tokio::runtime::Builder;
+use tracing_subscriber::EnvFilter;
 
-use overacp_agent::BootConfig;
+use overacp_agent::config::Config;
+use overacp_agent::run::run;
 
-const HELP: &str = "\
-overacp-agent — over/ACP supervisor
+fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env().add_directive("overacp_agent=info".parse()?))
+        .with_writer(stderr)
+        .init();
 
-USAGE:
-    overacp-agent [--help] [--version]
+    // Install rustls default crypto provider — required by
+    // tokio-tungstenite when multiple providers are linked indirectly.
+    let _ = ring::default_provider().install_default();
 
-The supervisor is configured exclusively through environment
-variables. There are no positional arguments and no config file.
+    let _ = dotenvy::dotenv();
+    let config = Config::from_env()?;
 
-REQUIRED:
-    OVERACP_TUNNEL_URL   Full WebSocket URL (wss://host/tunnel/<conv>)
-    OVERACP_JWT          Bearer token for the tunnel and LLM proxy
-    OVERACP_AGENT_ID     Controlplane agents.id (UUID)
-
-OPTIONAL:
-    OVERACP_ADAPTER              Adapter to load (default: loop)
-    OVERACP_WORKSPACE_DIR        Child working directory (default: launch CWD)
-    OVERACP_RECONNECT_BACKOFF_MS Test override for backoff base
-
-Any non-OVERACP_* env vars are forwarded verbatim to the child adapter.
-";
-
-fn main() -> ExitCode {
-    let args: Vec<String> = env::args().skip(1).collect();
-    if let Some(a) = args.first() {
-        match a.as_str() {
-            "--help" | "-h" => {
-                println!("{HELP}");
-                return ExitCode::SUCCESS;
-            }
-            "--version" | "-V" => {
-                println!("overacp-agent {}", env!("CARGO_PKG_VERSION"));
-                return ExitCode::SUCCESS;
-            }
-            other => {
-                eprintln!("error: unexpected argument `{other}`. See --help.");
-                return ExitCode::from(2);
-            }
-        }
-    }
-
-    match BootConfig::from_process_env() {
-        Ok(cfg) => {
-            // 0.4 milestone only ratifies the boot contract; the
-            // supervisor loop lands in a follow-up commit.
-            eprintln!(
-                "overacp-agent: boot config parsed (agent_id={}, adapter={}, workspace={})",
-                cfg.agent_id,
-                cfg.adapter,
-                cfg.workspace_dir.display()
-            );
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("overacp-agent: {e}");
-            ExitCode::from(1)
-        }
-    }
+    Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(config))
 }

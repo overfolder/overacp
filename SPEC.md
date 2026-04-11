@@ -21,7 +21,10 @@ identity. Those are jobs for whichever system wraps it.
 ## What over/ACP does
 
 - **Terminates agent tunnels.** One WebSocket per agent, JSON-RPC 2.0
-  on the wire, JWT bearer auth on upgrade.
+  on the wire, JWT bearer auth on upgrade. The `overacp-agent`
+  supervisor running on the untrusted side mirrors this
+  payload-agnostic posture: it shuttles JSON-RPC text frames between
+  the WebSocket and its child's stdio without inspecting them.
 - **Routes user messages to agents.** `POST /agents/{id}/messages`
   pushes a message frame down the agent's tunnel as a `session/message`
   notification. Body travels in the notification — no poll round-trip.
@@ -125,6 +128,11 @@ the Rust type and the design-doc update in the same commit.
 │   │  │  overacp-agent (supervisor)                        │ │      │
 │   │  │  ── opens the WebSocket, reconnects on drop        │ │      │
 │   │  │  ── bridges WS frames ↔ child stdio                │ │      │
+│   │  │  ── content-agnostic: JSON-RPC frames are          │ │      │
+│   │  │     forwarded one-line-per-frame without parsing;  │ │      │
+│   │  │     the OS pipe between supervisor and child is    │ │      │
+│   │  │     the natural buffer for mid-turn pushes, so     │ │      │
+│   │  │     the supervisor keeps no in-memory queue.       │ │      │
 │   │  └─────────────────────┬──────────────────────────────┘ │      │
 │   │                        │                                │      │
 │   │  ┌─────────────────────▼──────────────────────────────┐ │      │

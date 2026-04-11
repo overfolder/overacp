@@ -1,11 +1,22 @@
-//! `overacp-agent` — supervisor for a child agent process speaking
-//! over/ACP on stdio.
+//! over/ACP agent-side supervisor.
 //!
-//! 0.4 milestone: this crate currently exposes only the boot
-//! contract (env-driven configuration) defined in
-//! `docs/design/protocol.md` § 2.4. The WebSocket supervisor and
-//! stdio bridge will land in subsequent commits.
+//! `overacp-agent` runs inside the compute environment that hosts a
+//! conversation. It opens a single WebSocket tunnel to the over/ACP
+//! server, spawns a child agent process (the reference `overloop` or
+//! any other `AgentAdapter` implementation), and pipes the protocol
+//! traffic between them.
+//!
+//! See `docs/design/protocol.md` and `SPEC.md` for the full design.
 
+pub mod adapter;
+pub mod bridge;
 pub mod config;
+pub mod process;
+pub mod run;
+pub mod tunnel;
+pub mod workspace;
 
-pub use config::{BootConfig, ConfigError};
+pub use adapter::{AgentAdapter, LoopAdapter};
+pub use bridge::{run as run_bridge, BridgeExit};
+pub use config::Config;
+pub use workspace::{NoopSync, WorkspaceSync};
