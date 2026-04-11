@@ -38,14 +38,14 @@ pub enum NextPush {
 pub trait AcpService {
     fn stream_text_delta(&mut self, text: &str) -> Result<()>;
     fn stream_activity(&mut self, activity: &str) -> Result<()>;
-    /// Fire-and-forget notification emitted when a turn completes.
-    /// Replaces the old request-shaped `turn/save`.
+    /// Fire-and-forget notification emitted when a turn completes,
+    /// carrying the turn's messages and usage totals. The broker fans
+    /// this out to SSE subscribers.
     fn turn_end(&mut self, messages: &[Message], usage: &Usage) -> Result<()>;
     fn quota_check(&mut self) -> Result<bool>;
     fn quota_update(&mut self, input_tokens: u64, output_tokens: u64) -> Result<()>;
     /// Block until the next `session/message` or `session/cancel`
-    /// notification arrives on the tunnel. Replaces the old
-    /// request-shaped `poll/newMessages`.
+    /// notification arrives on the tunnel.
     fn next_push(&mut self) -> Result<NextPush>;
     fn heartbeat(&mut self) -> Result<()>;
 }

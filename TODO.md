@@ -45,11 +45,16 @@ crate landed. All items block calling the loop "protocol-conformant".
 
 - [x] Loop depends on `overacp-protocol` and consumes its method-name
       constants instead of hard-coding strings in `loop/src/acp.rs`.
-- [x] Loop's `Message` / `InitializeResult` types are replaced by the
-      ones in `overacp_protocol::messages`.
-      *(Note: `llm::Message` stays because it carries richer tool-call
-      typing for the LLM client; the wire is bridged at the
-      `AcpClient::initialize` and `AcpClient::turn_end` boundaries.)*
+- [x] Loop consumes `overacp_protocol::messages` payload types for
+      outbound notifications (`TextDelta`, `Activity`, `TurnEndParams`,
+      `QuotaUpdateRequest`) and for inbound `SessionMessageParams`.
+      *(Note: `llm::Message` stays local because it carries richer
+      tool-call typing the LLM client needs; the wire is bridged at
+      the `AcpClient::turn_end` boundary via a serde round-trip
+      into `protocol::Message`. `AcpClient::initialize` returns a
+      local `InitializeResult` struct that parses directly into the
+      LLM-facing shape rather than `protocol::InitializeResponse`,
+      because the LLM-facing `Message` is the consumer.)*
 - [x] Loop reads the message body inline from the `session/message`
       notification's `params` field instead of polling. The
       `poll/newMessages` method has been removed from the protocol.

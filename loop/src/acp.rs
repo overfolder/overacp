@@ -6,6 +6,10 @@
 //! so that overloop cannot drift from the broker.
 
 use anyhow::{Context, Result};
+use overacp_protocol::messages::{
+    Activity, Message as ProtoMessage, QuotaUpdateRequest, Role as ProtoRole, SessionMessageParams,
+    TextDelta, TurnEndParams, Usage as ProtoUsage,
+};
 use overacp_protocol::methods;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -165,34 +169,42 @@ impl<R: Read, W: Write> AcpClient<R, W> {
 
 impl<R: Read, W: Write> AcpService for AcpClient<R, W> {
     fn stream_text_delta(&mut self, text: &str) -> Result<()> {
-        self.send_notification(methods::STREAM_TEXT_DELTA, Some(json!({ "text": text })))
+        let params = TextDelta {
+            text: text.to_string(),
+        };
+        self.send_notification(methods::STREAM_TEXT_DELTA, Some(serde_json::to_value(params)?))
     }
 
     fn stream_activity(&mut self, activity: &str) -> Result<()> {
         // `stream/activity` carries a discriminator + opaque data per
         // docs/design/protocol.md § 3.4. Wrap the legacy single-string
         // form as a "log" kind.
-        self.send_notification(
-            methods::STREAM_ACTIVITY,
-            Some(json!({ "kind": "log", "data": activity })),
-        )
+        let params = Activity {
+            kind: "log".to_string(),
+            data: Value::String(activity.to_string()),
+        };
+        self.send_notification(methods::STREAM_ACTIVITY, Some(serde_json::to_value(params)?))
     }
 
     fn turn_end(&mut self, messages: &[Message], usage: &Usage) -> Result<()> {
-        // Serialize LLM-facing messages as the wire shape the broker
-        // expects for `TurnEndParams`. Usage is translated from the
-        // LLM client's `prompt_tokens` / `completion_tokens` to the
-        // protocol's `input_tokens` / `output_tokens`.
-        self.send_notification(
-            methods::TURN_END,
-            Some(json!({
-                "messages": messages,
-                "usage": {
-                    "input_tokens": usage.prompt_tokens,
-                    "output_tokens": usage.completion_tokens,
-                },
-            })),
-        )
+        // Convert LLM-facing messages into the protocol's `Message`
+        // shape via serde round-trip. The two types serialize
+        // identically (same field names, `tool_calls` as Value on the
+        // protocol side absorbs the richer ToolCall typing); using
+        // the typed `TurnEndParams` here makes the broker's wire
+        // contract enforce the payload shape at compile time rather
+        // than at runtime when the broker rejects it.
+        let proto_messages: Vec<ProtoMessage> =
+            serde_json::from_value(serde_json::to_value(messages)?)
+                .context("convert llm::Message to protocol::Message for turn/end")?;
+        let params = TurnEndParams {
+            messages: proto_messages,
+            usage: ProtoUsage {
+                input_tokens: usage.prompt_tokens,
+                output_tokens: usage.completion_tokens,
+            },
+        };
+        self.send_notification(methods::TURN_END, Some(serde_json::to_value(params)?))
     }
 
     fn quota_check(&mut self) -> Result<bool> {
@@ -204,13 +216,11 @@ impl<R: Read, W: Write> AcpService for AcpClient<R, W> {
     }
 
     fn quota_update(&mut self, input_tokens: u64, output_tokens: u64) -> Result<()> {
-        self.send_request(
-            methods::QUOTA_UPDATE,
-            Some(json!({
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-            })),
-        )?;
+        let params = QuotaUpdateRequest {
+            input_tokens,
+            output_tokens,
+        };
+        self.send_request(methods::QUOTA_UPDATE, Some(serde_json::to_value(params)?))?;
         Ok(())
     }
 
@@ -219,7 +229,9 @@ impl<R: Read, W: Write> AcpService for AcpClient<R, W> {
             let notif = self.recv_notification()?;
             match notif.method.as_str() {
                 m if m == methods::SESSION_MESSAGE => {
-                    let msg = session_message_to_llm_message(&notif.params)?;
+                    let params: SessionMessageParams = serde_json::from_value(notif.params)
+                        .context("parse session/message params")?;
+                    let msg = session_message_to_llm_message(params)?;
                     return Ok(NextPush::Message(msg));
                 }
                 m if m == methods::SESSION_CANCEL => {
@@ -237,32 +249,26 @@ impl<R: Read, W: Write> AcpService for AcpClient<R, W> {
     }
 }
 
-/// Convert the inline `session/message` params into the LLM-facing
-/// `Message` shape the agentic loop operates on.
+/// Convert the typed `SessionMessageParams` from the protocol crate
+/// into the LLM-facing `Message` shape the agentic loop operates on.
 ///
 /// `content` is opaque on the wire (the broker never inspects it),
-/// so we try `Content::Text` first and fall back to `Content::Blocks`.
-fn session_message_to_llm_message(params: &Value) -> Result<Message> {
-    let role_str = params
-        .get("role")
-        .and_then(|v| v.as_str())
-        .unwrap_or("user");
-    let role = match role_str {
-        "system" => Role::System,
-        "user" => Role::User,
-        "assistant" => Role::Assistant,
-        "tool" => Role::Tool,
-        other => anyhow::bail!("session/message: unknown role {other}"),
+/// so we accept both a bare string (`Content::Text`) and a structured
+/// list of content blocks (`Content::Blocks`).
+fn session_message_to_llm_message(params: SessionMessageParams) -> Result<Message> {
+    let role = match params.role {
+        ProtoRole::System => Role::System,
+        ProtoRole::User => Role::User,
+        ProtoRole::Assistant => Role::Assistant,
+        ProtoRole::Tool => Role::Tool,
     };
 
-    let content_value = params.get("content").cloned().unwrap_or(Value::Null);
-    let content = match &content_value {
+    let content = match params.content {
         Value::Null => None,
-        Value::String(s) => Some(Content::Text(s.clone())),
-        Value::Array(_) | Value::Object(_) => {
-            // Defer to the LLM-facing Content's own serde (untagged).
-            Some(serde_json::from_value(content_value).context("parse session/message content")?)
-        }
+        Value::String(s) => Some(Content::Text(s)),
+        other @ (Value::Array(_) | Value::Object(_)) => Some(
+            serde_json::from_value(other).context("parse session/message content blocks")?,
+        ),
         other => Some(Content::Text(other.to_string())),
     };
 
@@ -439,13 +445,20 @@ mod tests {
 
     #[test]
     fn next_push_rejects_unknown_role() {
+        // An unknown role is caught at the `SessionMessageParams`
+        // deserialization boundary by the protocol crate's typed
+        // `Role` enum, so we just assert the call fails.
         let input = notification(
             "session/message",
             json!({"role": "alien", "content": "hi"}),
         );
         let mut acp = mock_acp(&input);
         let err = acp.next_push().unwrap_err();
-        assert!(err.to_string().contains("unknown role"));
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("session/message") || msg.contains("variant"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]
