@@ -148,10 +148,6 @@ mod tests {
 
         let allowed = state.quota_policy.check(&claims).await.unwrap();
         assert!(!allowed, "stub quota should refuse");
-        state
-            .quota_policy
-            .record(&claims, json!({}))
-            .await
-            .unwrap();
+        state.quota_policy.record(&claims, json!({})).await.unwrap();
     }
 }

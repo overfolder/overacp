@@ -8,8 +8,8 @@
 //! the unit tests in `dispatch.rs` (which build the context manually)
 //! won't notice but this test will.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -158,12 +158,16 @@ async fn full_dispatch_round_trip_via_appstate() {
 
     // turn/end and heartbeat are valid agent → server notifications
     // and produce no response.
-    assert!(handle_message(r#"{"jsonrpc":"2.0","method":"turn/end"}"#, &ctx)
-        .await
-        .is_none());
-    assert!(handle_message(r#"{"jsonrpc":"2.0","method":"heartbeat"}"#, &ctx)
-        .await
-        .is_none());
+    assert!(
+        handle_message(r#"{"jsonrpc":"2.0","method":"turn/end"}"#, &ctx)
+            .await
+            .is_none()
+    );
+    assert!(
+        handle_message(r#"{"jsonrpc":"2.0","method":"heartbeat"}"#, &ctx)
+            .await
+            .is_none()
+    );
 
     // session/cancel is server → agent only. If the agent ever
     // sends one up the wire, the broker rejects it as method not

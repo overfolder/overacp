@@ -36,8 +36,7 @@ const SIGNING_KEY: &str = "e2e-signing-key";
 const ISSUER: &str = "overacp";
 
 fn fresh_state() -> (AppState, Arc<dyn Authenticator>) {
-    let auth: Arc<dyn Authenticator> =
-        Arc::new(StaticJwtAuthenticator::new(SIGNING_KEY, ISSUER));
+    let auth: Arc<dyn Authenticator> = Arc::new(StaticJwtAuthenticator::new(SIGNING_KEY, ISSUER));
     let state = AppState::new(auth.clone());
     (state, auth)
 }
@@ -66,7 +65,9 @@ fn mint_agent_for(auth: &Arc<dyn Authenticator>, agent_id: Uuid) -> String {
 fn register_fake(state: &AppState, agent_id: Uuid) -> mpsc::UnboundedReceiver<String> {
     let (tx, rx) = mpsc::unbounded_channel::<String>();
     let claims = Claims::agent(agent_id, None, 300, ISSUER);
-    state.registry.register(agent_id, AgentEntry::new(tx, claims));
+    state
+        .registry
+        .register(agent_id, AgentEntry::new(tx, claims));
     rx
 }
 
@@ -257,7 +258,10 @@ async fn describe_unknown_agent_returns_404_for_admin() {
     let admin_jwt = mint_admin(&auth);
     let (status, _) = oneshot(
         app,
-        bearer(empty_get(&format!("/agents/{}", Uuid::new_v4())), &admin_jwt),
+        bearer(
+            empty_get(&format!("/agents/{}", Uuid::new_v4())),
+            &admin_jwt,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -579,10 +583,7 @@ async fn malformed_bearer_is_401() {
 async fn missing_bearer_is_401() {
     let (state, _) = fresh_state();
     let app = router(state);
-    let res = app
-        .oneshot(empty_get("/agents"))
-        .await
-        .unwrap();
+    let res = app.oneshot(empty_get("/agents")).await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
 

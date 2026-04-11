@@ -95,10 +95,7 @@ fn message_queue_full_error_is_re_exported_from_crate_root() {
     let id = Uuid::new_v4();
     q.push(id, "a".into()).unwrap();
     let err = q.push(id, "b".into()).unwrap_err();
-    let QueueError::Full {
-        agent_id,
-        capacity,
-    } = err;
+    let QueueError::Full { agent_id, capacity } = err;
     assert_eq!(agent_id, id);
     assert_eq!(capacity, 1);
 }
@@ -111,14 +108,8 @@ fn drain_on_reconnect_via_appstate() {
     let agent_id = Uuid::new_v4();
 
     // 1. Push two notifications while disconnected.
-    state
-        .message_queue
-        .push(agent_id, "first".into())
-        .unwrap();
-    state
-        .message_queue
-        .push(agent_id, "second".into())
-        .unwrap();
+    state.message_queue.push(agent_id, "first".into()).unwrap();
+    state.message_queue.push(agent_id, "second".into()).unwrap();
     assert_eq!(state.message_queue.len(agent_id), 2);
 
     // 2. Reconnect: register an entry, then drain the queue and

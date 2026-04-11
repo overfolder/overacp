@@ -53,8 +53,7 @@ async fn spawn_server(state: AppState) -> (SocketAddr, JoinHandle<()>) {
 }
 
 fn fresh_state() -> (AppState, Arc<dyn Authenticator>) {
-    let auth: Arc<dyn Authenticator> =
-        Arc::new(StaticJwtAuthenticator::new(SIGNING_KEY, ISSUER));
+    let auth: Arc<dyn Authenticator> = Arc::new(StaticJwtAuthenticator::new(SIGNING_KEY, ISSUER));
     let state = AppState::new(auth.clone());
     (state, auth)
 }
@@ -320,9 +319,7 @@ async fn rejects_mismatched_agent_jwt_on_upgrade() {
     let other = Uuid::new_v4();
     // Token minted for `other`, path is `path_id` — upgrade should
     // fail with 403 before the WS handshake completes.
-    let token = auth
-        .mint(&Claims::agent(other, None, 60, ISSUER))
-        .unwrap();
+    let token = auth.mint(&Claims::agent(other, None, 60, ISSUER)).unwrap();
 
     let url = format!("ws://{addr}/tunnel/{path_id}");
     let mut req = url.into_client_request().unwrap();
@@ -332,5 +329,8 @@ async fn rejects_mismatched_agent_jwt_on_upgrade() {
     // tungstenite surfaces upgrade rejections as `Http(response)`
     // with the status code. We just assert the error exists.
     let msg = err.to_string();
-    assert!(msg.contains("403") || msg.contains("Forbidden"), "msg = {msg}");
+    assert!(
+        msg.contains("403") || msg.contains("Forbidden"),
+        "msg = {msg}"
+    );
 }

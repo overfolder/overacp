@@ -63,10 +63,7 @@ impl MessageQueue {
             .inner
             .entry(agent_id)
             .or_insert_with(|| Mutex::new(VecDeque::new()));
-        let mut guard = entry
-            .value()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut guard = entry.value().lock().unwrap_or_else(|p| p.into_inner());
         if guard.len() >= self.per_agent_capacity {
             return Err(QueueError::Full {
                 agent_id,
@@ -165,10 +162,7 @@ mod tests {
         q.push(id, frame(2)).unwrap();
         q.push(id, frame(3)).unwrap();
         let err = q.push(id, frame(4)).unwrap_err();
-        let QueueError::Full {
-            agent_id,
-            capacity,
-        } = err;
+        let QueueError::Full { agent_id, capacity } = err;
         assert_eq!(agent_id, id);
         assert_eq!(capacity, 3);
     }
@@ -200,6 +194,9 @@ mod tests {
     #[test]
     fn capacity_returns_configured_value() {
         assert_eq!(MessageQueue::new(7).capacity(), 7);
-        assert_eq!(MessageQueue::default().capacity(), DEFAULT_PER_AGENT_CAPACITY);
+        assert_eq!(
+            MessageQueue::default().capacity(),
+            DEFAULT_PER_AGENT_CAPACITY
+        );
     }
 }

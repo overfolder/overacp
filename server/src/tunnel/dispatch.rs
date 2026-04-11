@@ -160,8 +160,8 @@ pub fn jsonrpc_response(id: Value, result: Result<Value, (i32, String)>) -> Stri
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     use async_trait::async_trait;
     use uuid::Uuid;
@@ -268,7 +268,8 @@ mod tests {
     #[tokio::test]
     async fn quota_update_default_returns_empty_object() {
         let ctx = ctx_default(Uuid::new_v4());
-        let frame = r#"{"jsonrpc":"2.0","id":1,"method":"quota/update","params":{"input_tokens":10}}"#;
+        let frame =
+            r#"{"jsonrpc":"2.0","id":1,"method":"quota/update","params":{"input_tokens":10}}"#;
         let resp = handle_message(frame, &ctx).await.unwrap();
         assert_eq!(parse(&resp)["result"], json!({}));
     }
@@ -639,6 +640,8 @@ mod tests {
     #[tokio::test]
     async fn missing_method_returns_none() {
         let ctx = ctx_default(Uuid::new_v4());
-        assert!(handle_message(r#"{"jsonrpc":"2.0","id":1}"#, &ctx).await.is_none());
+        assert!(handle_message(r#"{"jsonrpc":"2.0","id":1}"#, &ctx)
+            .await
+            .is_none());
     }
 }

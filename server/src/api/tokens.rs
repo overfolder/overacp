@@ -61,9 +61,7 @@ async fn mint_token(
 ) -> Result<(StatusCode, Json<MintResponse>), ApiError> {
     let ttl = req.ttl_secs.unwrap_or(DEFAULT_AGENT_TTL_SECS);
     if ttl <= 0 {
-        return Err(ApiError::BadRequest(
-            "ttl_secs must be positive".into(),
-        ));
+        return Err(ApiError::BadRequest("ttl_secs must be positive".into()));
     }
 
     // Read the issuer straight off the authenticator so the minted
@@ -76,10 +74,7 @@ async fn mint_token(
         .mint(&claims)
         .map_err(|e| ApiError::Internal(format!("mint failed: {e}")))?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(MintResponse { token, claims }),
-    ))
+    Ok((StatusCode::CREATED, Json(MintResponse { token, claims })))
 }
 
 #[cfg(test)]
@@ -139,10 +134,7 @@ mod tests {
         .await
         .unwrap();
         let remaining = resp.claims.exp - chrono::Utc::now().timestamp();
-        assert!(
-            (110..=125).contains(&remaining),
-            "remaining = {remaining}"
-        );
+        assert!((110..=125).contains(&remaining), "remaining = {remaining}");
     }
 
     #[tokio::test]

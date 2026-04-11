@@ -67,10 +67,7 @@ async fn healthz() -> &'static str {
 /// authenticator, return the `Claims` or a boxed error response.
 /// Boxed so the `Err` variant stays small (axum's `Response` is
 /// large and clippy flags `result_large_err` otherwise).
-fn validate_bearer(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> Result<Claims, Box<Response>> {
+fn validate_bearer(state: &AppState, headers: &HeaderMap) -> Result<Claims, Box<Response>> {
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -137,8 +134,7 @@ async fn require_agent_or_admin(
     match path_agent_id(request.uri().path()) {
         Some(id) if id == claims.sub => next.run(request).await,
         Some(_) => (StatusCode::FORBIDDEN, "token agent mismatch").into_response(),
-        None => (StatusCode::FORBIDDEN, "admin role required for this route")
-            .into_response(),
+        None => (StatusCode::FORBIDDEN, "admin role required for this route").into_response(),
     }
 }
 
@@ -214,9 +210,7 @@ impl IntoResponse for TunnelAuthRejection {
             Self::MissingToken => (StatusCode::UNAUTHORIZED, "missing token").into_response(),
             Self::InvalidToken => (StatusCode::UNAUTHORIZED, "invalid token").into_response(),
             Self::WrongRole => (StatusCode::FORBIDDEN, "agent role required").into_response(),
-            Self::AgentMismatch => {
-                (StatusCode::FORBIDDEN, "token agent mismatch").into_response()
-            }
+            Self::AgentMismatch => (StatusCode::FORBIDDEN, "token agent mismatch").into_response(),
         }
     }
 }

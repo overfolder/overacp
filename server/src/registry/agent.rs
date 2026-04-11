@@ -50,18 +50,12 @@ impl AgentEntry {
     }
 
     pub fn touch(&self) {
-        let mut guard = self
-            .last_activity
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut guard = self.last_activity.lock().unwrap_or_else(|p| p.into_inner());
         *guard = Instant::now();
     }
 
     pub fn last_activity(&self) -> Instant {
-        *self
-            .last_activity
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        *self.last_activity.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 
@@ -92,7 +86,10 @@ impl AgentDescription {
             agent_id,
             connected: true,
             uptime_secs: Some(now.saturating_duration_since(entry.connected_at).as_secs()),
-            idle_secs: Some(now.saturating_duration_since(entry.last_activity()).as_secs()),
+            idle_secs: Some(
+                now.saturating_duration_since(entry.last_activity())
+                    .as_secs(),
+            ),
             user: entry.claims.user,
         }
     }
@@ -104,7 +101,8 @@ impl AgentDescription {
             connected: false,
             uptime_secs: None,
             idle_secs: Some(
-                now.saturating_duration_since(entry.disconnected_at).as_secs(),
+                now.saturating_duration_since(entry.disconnected_at)
+                    .as_secs(),
             ),
             user: entry.user,
         }
@@ -145,15 +143,19 @@ impl AgentRegistry {
     /// entry, if any — useful for tests but normally callers ignore
     /// it (the tunnel write loop holding the prior `tx` will drop on
     /// the next iteration once its channel closes).
-    pub fn register(
-        &self,
-        agent_id: Uuid,
-        entry: AgentEntry,
-    ) -> Option<Arc<AgentEntry>> {
+    ///
+    /// Invariant ordering: insert into `connected` **first**, then
+    /// purge from `recent`. A concurrent `list()` or `describe()`
+    /// that races this call will always see the agent in at least
+    /// one of the two structures, never in neither. Doing the purge
+    /// first would open a window where an agent is missing from the
+    /// snapshot entirely.
+    pub fn register(&self, agent_id: Uuid, entry: AgentEntry) -> Option<Arc<AgentEntry>> {
+        let previous = self.connected.insert(agent_id, Arc::new(entry));
         // If we're replacing an existing connection, also clear the
         // recently-disconnected entry — that agent is back.
         self.purge_recent(agent_id);
-        self.connected.insert(agent_id, Arc::new(entry))
+        previous
     }
 
     /// Look up the connected entry for `agent_id`.
@@ -352,5 +354,33 @@ mod tests {
         assert_eq!(listed.len(), 2);
         assert!(listed[0].connected);
         assert!(!listed[1].connected);
+    }
+
+    #[test]
+    fn register_after_disconnect_is_always_visible_in_list() {
+        // Regression for a race where `register()` used to purge
+        // recent BEFORE inserting into connected. A concurrent
+        // `list()` snapshotting in between saw the agent in neither
+        // collection. The fixed ordering inserts into `connected`
+        // first, so the agent always appears in at least one.
+        //
+        // A single-threaded test can't deterministically recreate
+        // the race, but we pin the end state after an unregister
+        // + register cycle: the agent appears in the list exactly
+        // once and is marked connected.
+        let reg = AgentRegistry::new();
+        let id = Uuid::new_v4();
+
+        let (_rx1, e1) = entry_for(id);
+        reg.register(id, e1);
+        reg.unregister(id);
+        let (_rx2, e2) = entry_for(id);
+        reg.register(id, e2);
+
+        let listed = reg.list();
+        let matches: Vec<_> = listed.iter().filter(|d| d.agent_id == id).collect();
+        assert_eq!(matches.len(), 1, "agent should appear exactly once");
+        assert!(matches[0].connected);
+        assert!(reg.describe(id).unwrap().connected);
     }
 }

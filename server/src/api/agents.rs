@@ -105,9 +105,7 @@ pub struct AgentListResponse {
 /// `GET /agents` — list currently-connected + recently-disconnected
 /// agents. Admin-only (enforced by the `require_admin` middleware
 /// wired up in [`crate::routes`]).
-async fn list_agents(
-    State(state): State<AppState>,
-) -> Result<Json<AgentListResponse>, ApiError> {
+async fn list_agents(State(state): State<AppState>) -> Result<Json<AgentListResponse>, ApiError> {
     Ok(Json(AgentListResponse {
         agents: state.registry.list(),
     }))
@@ -199,10 +197,7 @@ async fn send_message(
         }
     };
 
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(SendMessageResponse { delivery }),
-    ))
+    Ok((StatusCode::ACCEPTED, Json(SendMessageResponse { delivery })))
 }
 
 fn queue_full(agent_id: Uuid, capacity: usize) -> ApiError {
@@ -281,7 +276,9 @@ mod tests {
     fn register_fake(state: &AppState, agent_id: Uuid) -> mpsc::UnboundedReceiver<String> {
         let (tx, rx) = mpsc::unbounded_channel::<String>();
         let claims = Claims::agent(agent_id, Some(Uuid::new_v4()), 60, "test");
-        state.registry.register(agent_id, AgentEntry::new(tx, claims));
+        state
+            .registry
+            .register(agent_id, AgentEntry::new(tx, claims));
         rx
     }
 
@@ -496,8 +493,14 @@ mod tests {
 
         let Json(resp) = list_agents(State(state)).await.unwrap();
         assert_eq!(resp.agents.len(), 2);
-        assert!(resp.agents.iter().any(|d| d.agent_id == live && d.connected));
-        assert!(resp.agents.iter().any(|d| d.agent_id == dead && !d.connected));
+        assert!(resp
+            .agents
+            .iter()
+            .any(|d| d.agent_id == live && d.connected));
+        assert!(resp
+            .agents
+            .iter()
+            .any(|d| d.agent_id == dead && !d.connected));
     }
 
     #[tokio::test]

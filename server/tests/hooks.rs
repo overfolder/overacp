@@ -9,8 +9,8 @@
 //! 3. The hook traits are object-safe and `Send + Sync` (verified
 //!    implicitly by storing them in `Arc<dyn ...>`).
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
