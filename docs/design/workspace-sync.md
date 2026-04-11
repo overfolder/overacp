@@ -11,18 +11,21 @@ into the core crates.
 
 ## 1. Where it lives in the architecture
 
-Workspace sync is **the agent supervisor's job**, not the
-controlplane's. The supervisor (`overacp-agent`) already runs inside
-the compute environment, holds the session JWT, and brackets the
-child agent's lifetime — that is exactly when sync needs to happen.
-The controlplane only tells the supervisor *which* sync configuration
-to use; it never moves bytes itself.
+Workspace sync is **the agent supervisor's job**, not the broker's
+and not the operator's. The supervisor (`overacp-agent`) already
+runs inside the compute environment, holds the agent JWT, and
+brackets the child agent's lifetime — that is exactly when sync
+needs to happen. The operator (whoever orchestrates the compute
+environment) only tells the supervisor *which* sync configuration
+to use; it never moves bytes itself, and the broker never sees
+the descriptor at all.
 
 This is a deliberate split:
 
-- **Controlplane** is small and stateless about workspaces. It
-  records the storage descriptor on the agent record, the same way
-  it records the compute pool, and serves it back over REST.
+- **Operator** records the storage descriptor wherever it
+  tracks agent metadata and supplies it to the supervisor at
+  launch time (typically via `OVERACP_WORKSPACE_SYNC` on the
+  spawned compute node).
 - **Supervisor** owns the actual transfer. It calls `pull()` before
   spawning the child, `push()` after the child exits. Both are
   trait methods so the supervisor doesn't grow per-backend
@@ -57,9 +60,9 @@ backend crate.
 
 ## 3. Configuration model
 
-The controlplane stores a workspace-sync descriptor on every agent
-record. It is a small typed enum carried in the agent's create-time
-`metadata` (or, for stricter typing, a dedicated column):
+The operator stores a workspace-sync descriptor wherever it tracks
+per-agent metadata. It is a small typed enum the operator hands to
+the supervisor at launch time:
 
 ```jsonc
 {
@@ -67,7 +70,7 @@ record. It is a small typed enum carried in the agent's create-time
     "backend": "gcs",
     "config": {
       "bucket":      "my-overacp-workspaces",
-      "prefix":      "user-${user_id}/conv-${conv_id}",
+      "prefix":      "user-${user_id}/agent-${agent_id}",
       "credentials": "${env:GCS_BEARER_TOKEN}"
     }
   }
@@ -75,22 +78,16 @@ record. It is a small typed enum carried in the agent's create-time
 ```
 
 The `backend` key picks which `WorkspaceSync` impl to instantiate.
-The `config` blob is opaque to the controlplane and validated by
-the backend crate. Secret references use the same `${provider:...}`
-syntax as compute pool configs (see
-[`controlplane.md`](./controlplane.md) § 3.6) so the same secret
-provider machinery serves both surfaces.
+The `config` blob is opaque to the broker and validated by the
+backend crate. Secret references follow whatever convention the
+operator prefers; the `${provider:...}` syntax is a suggestion.
 
-When the controlplane spawns an agent, it passes the resolved
-descriptor to the supervisor as either:
-
-- An env var (`OVERACP_WORKSPACE_SYNC` set to the JSON blob), or
-- A field in the agent's `initialize` response (so the supervisor
-  receives the descriptor over the tunnel after auth).
-
-The env-var path is preferred because it lets the supervisor `pull()`
-*before* opening the WebSocket — the workspace is ready by the time
-the child agent process needs it.
+When the operator spawns an agent, it passes the resolved
+descriptor to the supervisor as an env var
+(`OVERACP_WORKSPACE_SYNC` set to the JSON blob). This lets the
+supervisor `pull()` *before* opening the WebSocket — the
+workspace is ready by the time the child agent process needs it.
+The broker does not see the descriptor at any point.
 
 ## 4. Backend crate convention
 
@@ -120,7 +117,7 @@ nothing. The supervisor only sees `pull()` and `push()`.
 
 This is the right place to put per-backend complexity (manifest
 format, hashing, exclusion globs, conflict policy) because it stays
-out of the agent core and out of the controlplane.
+out of the agent core and out of the broker.
 
 ## 5. Lifecycle in the supervisor
 
@@ -148,8 +145,9 @@ become a function of the runtime config.
 ## 6. Failure handling
 
 - **`pull` failure** is fatal. The supervisor exits non-zero before
-  spawning the child. The controlplane sees the agent transition
-  to `errored` and surfaces the reason.
+  spawning the child. The operator's orchestration layer (whatever
+  launched the compute node) sees the non-zero exit and surfaces
+  the reason however it tracks agent health.
 - **`push` failure** is logged and the supervisor still exits zero.
   The user already saw the conversation results over SSE; losing
   the workspace persist is bad but recoverable on the next run if
@@ -176,5 +174,5 @@ become a function of the runtime config.
    (lifts Overfolder's planned GCS work directly).
 3. Add `overacp-workspace-s3` and `overacp-workspace-rclone` as
    community-friendly defaults.
-4. Drop the `OVERACP_WORKSPACE_SYNC` env-var fallback once the
-   controlplane is wired to inject the descriptor over the tunnel.
+4. The `OVERACP_WORKSPACE_SYNC` env-var remains the stable contract;
+   the broker does not participate in workspace sync at all.

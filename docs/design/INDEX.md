@@ -20,5 +20,5 @@ For the high-level architecture and milestone roadmap see
   [`SPEC.md`](../../SPEC.md). Kept for context only.
 - [`workspace-sync.md`](./workspace-sync.md) — pluggable workspace
   hydration and persistence: where it lives in the architecture
-  (agent supervisor, not controlplane), the `WorkspaceSync` trait,
+  (agent supervisor, not the broker), the `WorkspaceSync` trait,
   the per-backend crate convention, and the configuration model.

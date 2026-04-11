@@ -30,8 +30,7 @@ identity. Those are jobs for whichever system wraps it.
   and `turn/end` notifications emitted by the agent.
 - **Routes tool calls.** Agents call `tools/list` / `tools/call` over
   the tunnel; the broker dispatches them through a pluggable
-  `ToolHost` (typically a controlplane-hosted MCP fan-out implemented
-  by the operator).
+  `ToolHost` (typically an operator-run MCP fan-out).
 - **Bootstraps agents.** On `initialize` the broker delegates to a
   `BootProvider` hook supplied by the operator, which returns the
   system prompt + recent message window. The broker stores nothing.
@@ -401,9 +400,10 @@ crate's:
   and pointing them at the broker. Reference orchestrators may ship
   as separate examples or crates, but none of them are part of the
   broker core.
-- **Workspace sync.** Hydrating `/workspace` from object storage on
-  cold start. Agent-side concern; the protocol carries no workspace
-  messages.
+- **Workspace sync.** Hydrating the agent's working directory from
+  object storage on cold start. Agent-supervisor concern; the
+  broker never sees the descriptor. Design doc:
+  [`docs/design/workspace-sync.md`](./docs/design/workspace-sync.md).
 - **Channels.** Telegram, web chat, Slack, voice — built on top of
   the REST surface, not in the broker.
 - **Identity, billing, tier policy.** No JWT claim, no method, no
