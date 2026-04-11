@@ -4,6 +4,7 @@ members = [
     "agent",
     "compute",
     "loop",
+    "protocol",
     "server",
 ]
 

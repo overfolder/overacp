@@ -1,6 +1,6 @@
 # over/ACP — Status
 
-**Updated:** 2026-04-10
+**Updated:** 2026-04-11
 
 ## Current milestone
 
@@ -73,7 +73,7 @@ broker. The code is mid-migration on `refactor/stateless-broker`:
 |---|---|
 | `overloop` | Vendored, builds. Reference agent. Still on the controlplane-era wire shape; migration tracked in `TODO.md` § 0.3.x. |
 | `overacp-compute-core` | Landed as a standalone library. `ComputeProvider` trait + node/exec/log types + `${provider:path:key}` config resolver. The broker no longer depends on it; operators can pull it in directly. |
-| `overacp-protocol` | Not started. |
+| `overacp-protocol` | Landed as a workspace member. Carries the canonical `Claims` shape (`{sub, role, user?, exp, iss}` — matches the broker's `server/src/auth.rs`), method-name constants (including `TURN_END`, `SESSION_CANCEL`, `STREAM_TOOL_CALL`, `STREAM_TOOL_RESULT`), and payload types for every request / notification on the tunnel (`InitializeResponse`, `SessionMessageParams`, `SessionCancelParams`, `TurnEndParams`, stream params, quota params). JWT helpers (`mint_token`, `validate_token`, `peek_claims_unverified`) sit on top of `jsonwebtoken`. Pure types, no tokio. 22 unit + fixture tests. Not yet consumed by `overloop` / `overacp-agent` / `overacp-server` — those follow in later phases. |
 | `overacp-agent` | Boot-config crate landed; supervisor + stdio bridge not started. |
 | `overacp-server` | Broker refactor complete on `refactor/stateless-broker`: JWT `Claims` + `mint`, operator hooks (`BootProvider`, `ToolHost`, `QuotaPolicy`) with default impls, hook-delegating tunnel dispatch, `AgentRegistry`, `MessageQueue`, and the new REST surface (`POST /tokens`, `GET /agents`, `GET /agents/{id}`, `DELETE /agents/{id}`, `POST /agents/{id}/messages`, `GET /agents/{id}/stream`, `POST /agents/{id}/cancel`) with JWT middleware gating. The legacy `SessionStore`, compute REST surface, and HTTP Basic auth have been removed. |
 | `overacp-tools-mcp` | Not started. |

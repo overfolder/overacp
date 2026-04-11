@@ -1,0 +1,5 @@
+{
+  "id": "tc_01",
+  "name": "read_file",
+  "arguments": { "path": "/etc/hostname" }
+}

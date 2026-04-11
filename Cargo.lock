@@ -1133,6 +1133,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "overacp-protocol"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "jsonwebtoken",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
 name = "overacp-server"
 version = "0.1.0"
 dependencies = [

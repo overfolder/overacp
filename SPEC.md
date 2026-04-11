@@ -74,7 +74,7 @@ identity. Those are jobs for whichever system wraps it.
 
 | Crate | What |
 |---|---|
-| `overacp-protocol` | Pure wire types, method-name constants, JWT claim helpers. No I/O, no tokio. |
+| `overacp-protocol` | Pure wire types, method-name constants, JWT claim helpers. No I/O, no tokio. **Depended on by `overacp-server`, `overacp-agent`, and `overloop`** — any new method or payload shape must land here first so the three crates cannot drift. Inline `serde_json::Value` JSON-RPC construction is allowed only at the payload-agnostic hook boundary inside the broker (see § The four hooks). |
 | `overacp-agent` | Supervisor that holds the WebSocket and bridges JSON-RPC to a child process's stdio. `AgentAdapter` trait so the supervised child can be any ACP-speaking harness. |
 | `overacp-server` | The broker. Stateless tunnel terminator + REST adapters + the four pluggable hooks (`BootProvider`, `ToolHost`, `QuotaPolicy`, `Authenticator`). |
 | **`overloop`** | Reference child agent: minimal agentic loop with built-in tools and an OpenAI-compatible LLM client. Speaks the protocol on stdio. |
@@ -83,6 +83,11 @@ Compute providers, workspace-sync backends, MCP `ToolHost`
 implementations, and storage adapters live **outside** these four
 crates — either as separate crates the operator pulls in, or in the
 operator's own codebase.
+
+The wire protocol is expressed in Rust types in `overacp-protocol`,
+and in prose in [`docs/design/protocol.md`](./docs/design/protocol.md).
+Those two must agree. When a wire change crosses the tunnel, land
+the Rust type and the design-doc update in the same commit.
 
 ## Architecture
 
