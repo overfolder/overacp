@@ -1178,6 +1178,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "glob",
+ "overacp-protocol",
  "reqwest",
  "serde",
  "serde_json",

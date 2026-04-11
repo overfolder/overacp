@@ -82,13 +82,6 @@ pub async fn run(
             silent_turns = 0;
         }
 
-        // Poll for new user messages
-        if let Ok(new_msgs) = acp.poll_new_messages() {
-            if !new_msgs.is_empty() {
-                messages.extend(new_msgs);
-            }
-        }
-
         // Inject loop status
         let status = format!(
             "[iteration {}/{}, elapsed {:?}]",
@@ -191,10 +184,11 @@ pub async fn run(
         }
     }
 
-    // Save turn
-    let usage_value = serde_json::to_value(&total_usage)?;
-    if let Err(e) = acp.turn_save(messages, &usage_value) {
-        error!("Failed to save turn: {}", e);
+    // Emit the fire-and-forget turn/end notification. The broker
+    // fans it out to SSE subscribers; the operator's backend is
+    // responsible for persisting the data.
+    if let Err(e) = acp.turn_end(messages, &total_usage) {
+        error!("Failed to emit turn/end: {}", e);
     }
 
     Ok(())

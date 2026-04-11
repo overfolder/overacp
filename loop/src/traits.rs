@@ -1,5 +1,4 @@
 use anyhow::Result;
-use serde_json::Value;
 use std::future::Future;
 
 use crate::llm::{CompletionResponse, Message, StopReason, ToolDefinition, Usage};
@@ -25,12 +24,28 @@ pub trait LlmService: Send + Sync {
     ) -> impl Future<Output = Result<CompletionResponse>> + Send;
 }
 
+/// Result of waiting for the next tunnel push. `session/message`
+/// arrives inline as a user `Message`; `session/cancel` surfaces as
+/// a sentinel that the outer loop uses to exit cleanly.
+#[derive(Debug)]
+pub enum NextPush {
+    /// A new user message to append to history and start a turn on.
+    Message(Message),
+    /// The server asked us to cancel the current conversation.
+    Cancel,
+}
+
 pub trait AcpService {
     fn stream_text_delta(&mut self, text: &str) -> Result<()>;
     fn stream_activity(&mut self, activity: &str) -> Result<()>;
-    fn turn_save(&mut self, messages: &[Message], usage: &Value) -> Result<()>;
+    /// Fire-and-forget notification emitted when a turn completes.
+    /// Replaces the old request-shaped `turn/save`.
+    fn turn_end(&mut self, messages: &[Message], usage: &Usage) -> Result<()>;
     fn quota_check(&mut self) -> Result<bool>;
     fn quota_update(&mut self, input_tokens: u64, output_tokens: u64) -> Result<()>;
-    fn poll_new_messages(&mut self) -> Result<Vec<Message>>;
+    /// Block until the next `session/message` or `session/cancel`
+    /// notification arrives on the tunnel. Replaces the old
+    /// request-shaped `poll/newMessages`.
+    fn next_push(&mut self) -> Result<NextPush>;
     fn heartbeat(&mut self) -> Result<()>;
 }

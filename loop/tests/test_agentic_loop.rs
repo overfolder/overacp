@@ -5,8 +5,7 @@ use overloop::llm::{
     Usage,
 };
 use overloop::tools::ToolRegistry;
-use overloop::traits::{AcpService, LlmService, StreamedResponse};
-use serde_json::Value;
+use overloop::traits::{AcpService, LlmService, NextPush, StreamedResponse};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -60,7 +59,9 @@ struct MockAcp {
     text_deltas: Vec<String>,
     activities: Vec<String>,
     quota_allowed: bool,
-    turn_saved: bool,
+    turn_ended: bool,
+    turn_end_usage: Option<Usage>,
+    inbox: VecDeque<NextPush>,
 }
 
 impl MockAcp {
@@ -69,7 +70,9 @@ impl MockAcp {
             text_deltas: Vec::new(),
             activities: Vec::new(),
             quota_allowed,
-            turn_saved: false,
+            turn_ended: false,
+            turn_end_usage: None,
+            inbox: VecDeque::new(),
         }
     }
 }
@@ -85,8 +88,9 @@ impl AcpService for MockAcp {
         Ok(())
     }
 
-    fn turn_save(&mut self, _messages: &[Message], _usage: &Value) -> Result<()> {
-        self.turn_saved = true;
+    fn turn_end(&mut self, _messages: &[Message], usage: &Usage) -> Result<()> {
+        self.turn_ended = true;
+        self.turn_end_usage = Some(usage.clone());
         Ok(())
     }
 
@@ -98,8 +102,10 @@ impl AcpService for MockAcp {
         Ok(())
     }
 
-    fn poll_new_messages(&mut self) -> Result<Vec<Message>> {
-        Ok(vec![])
+    fn next_push(&mut self) -> Result<NextPush> {
+        self.inbox
+            .pop_front()
+            .ok_or_else(|| anyhow::anyhow!("mock inbox empty"))
     }
 
     fn heartbeat(&mut self) -> Result<()> {
@@ -185,7 +191,8 @@ async fn test_simple_text_response() {
     .await
     .unwrap();
 
-    assert!(acp.turn_saved);
+    assert!(acp.turn_ended);
+    assert!(acp.turn_end_usage.is_some());
     assert!(
         acp.text_deltas.iter().any(|d| d.contains("Hello!")),
         "Expected 'Hello!' in text_deltas: {:?}",

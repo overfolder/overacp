@@ -11,6 +11,7 @@ use overloop::agentic_loop::{self, LoopConfig};
 use overloop::config::Config;
 use overloop::llm;
 use overloop::tools::ToolRegistry;
+use overloop::traits::{AcpService, NextPush};
 
 fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -50,37 +51,41 @@ async fn run(config: Config) -> Result<()> {
         env::set_current_dir(&config.workspace)?;
     }
 
-    // Wait for session/message notification
+    // Single cold-start `initialize` — the broker delegates to
+    // BootProvider to return {system_prompt, messages, tools_config}.
+    // The agent holds this history in memory for the lifetime of
+    // the process and does NOT re-initialize per turn.
+    info!("Initializing conversation...");
+    let init = acp.initialize()?;
+    let mut messages = init.messages;
+
+    // Prepend system prompt if not already present.
+    if messages.first().map(|m| &m.role) != Some(&llm::Role::System) {
+        messages.insert(
+            0,
+            llm::Message {
+                role: llm::Role::System,
+                content: Some(llm::Content::Text(init.system_prompt)),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        );
+    }
+
+    let loop_config = LoopConfig {
+        max_iterations: config.max_iterations,
+        timeout: Duration::from_secs(config.timeout_minutes * 60),
+    };
+
+    // Outer turn loop: block until the next user message arrives
+    // inline in a `session/message` notification, then run a turn.
+    // `session/cancel` exits the loop cleanly.
     info!("Waiting for session/message...");
     loop {
-        let notification = acp.recv_notification()?;
-
-        match notification.method.as_str() {
-            "session/message" => {
-                info!("Received session/message");
-
-                // Initialize to get system prompt + history
-                let init = acp.initialize()?;
-                let mut messages = init.messages;
-
-                // Prepend system prompt if not already present
-                if messages.first().map(|m| &m.role) != Some(&llm::Role::System) {
-                    messages.insert(
-                        0,
-                        llm::Message {
-                            role: llm::Role::System,
-                            content: Some(llm::Content::Text(init.system_prompt)),
-                            tool_calls: None,
-                            tool_call_id: None,
-                        },
-                    );
-                }
-
-                let loop_config = LoopConfig {
-                    max_iterations: config.max_iterations,
-                    timeout: Duration::from_secs(config.timeout_minutes * 60),
-                };
-
+        match acp.next_push()? {
+            NextPush::Message(user_msg) => {
+                info!("Received user message, starting turn");
+                messages.push(user_msg);
                 if let Err(e) =
                     agentic_loop::run(&mut acp, &llm, &mut registry, &mut messages, &loop_config)
                         .await
@@ -88,12 +93,9 @@ async fn run(config: Config) -> Result<()> {
                     error!("Agentic loop error: {}", e);
                 }
             }
-            "session/cancel" => {
-                info!("Session cancelled");
+            NextPush::Cancel => {
+                info!("Session cancelled — exiting");
                 break;
-            }
-            other => {
-                info!("Ignoring unknown notification: {}", other);
             }
         }
     }

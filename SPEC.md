@@ -77,7 +77,7 @@ identity. Those are jobs for whichever system wraps it.
 | `overacp-protocol` | Pure wire types, method-name constants, JWT claim helpers. No I/O, no tokio. The authoritative wire seam: `overacp-server`, `overacp-agent`, and `overloop` all consume it (or are in the process of being migrated to consume it), so any new method or payload shape must land here first to prevent drift. Inline `serde_json::Value` JSON-RPC construction is allowed only at the payload-agnostic hook boundary inside the broker (see § The four hooks). |
 | `overacp-agent` | Supervisor that holds the WebSocket and bridges JSON-RPC to a child process's stdio. `AgentAdapter` trait so the supervised child can be any ACP-speaking harness. |
 | `overacp-server` | The broker. Stateless tunnel terminator + REST adapters + the four pluggable hooks (`BootProvider`, `ToolHost`, `QuotaPolicy`, `Authenticator`). |
-| **`overloop`** | Reference child agent: minimal agentic loop with built-in tools and an OpenAI-compatible LLM client. Speaks the protocol on stdio. |
+| **`overloop`** | Reference child agent: minimal agentic loop with built-in tools and an OpenAI-compatible LLM client. Speaks the protocol on stdio. **An OpenAI-compatible LLM endpoint and API key are required to run `overloop`** — there is no echo/stub mode. Smoke scripts and human demos must supply `LLM_API_KEY` (typically via `.env`); the hermetic CI path uses an in-process mock LLM server in the `overacp-agent` integration tests, not a mode in `overloop` itself. |
 
 Compute providers, workspace-sync backends, MCP `ToolHost`
 implementations, and storage adapters live **outside** these four

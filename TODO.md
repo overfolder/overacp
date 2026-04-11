@@ -43,14 +43,17 @@ Tracks concrete next steps. High-level roadmap lives in
 Tracked separately because the gaps surfaced after the protocol
 crate landed. All items block calling the loop "protocol-conformant".
 
-- [ ] Loop depends on `overacp-protocol` and consumes its method-name
+- [x] Loop depends on `overacp-protocol` and consumes its method-name
       constants instead of hard-coding strings in `loop/src/acp.rs`.
-- [ ] Loop's `Message` / `InitializeResult` types are replaced by the
+- [x] Loop's `Message` / `InitializeResult` types are replaced by the
       ones in `overacp_protocol::messages`.
-- [ ] Loop reads the message body inline from the `session/message`
+      *(Note: `llm::Message` stays because it carries richer tool-call
+      typing for the LLM client; the wire is bridged at the
+      `AcpClient::initialize` and `AcpClient::turn_end` boundaries.)*
+- [x] Loop reads the message body inline from the `session/message`
       notification's `params` field instead of polling. The
       `poll/newMessages` method has been removed from the protocol.
-- [ ] Loop emits `turn/end` (fire-and-forget notification) at the
+- [x] Loop emits `turn/end` (fire-and-forget notification) at the
       end of each turn instead of the old `turn/save` request.
 - [ ] Loop emits `stream/toolCall` and `stream/toolResult`
       notifications around every tool invocation.
