@@ -1,6 +1,7 @@
-//! Child agent subprocess management. Lifted and genericized from
-//! `overfolder/overlet/src/process.rs` — the spawned binary is
-//! whatever the active `AgentAdapter` returns.
+//! Child agent subprocess management. The spawned binary is
+//! whatever the active `AgentAdapter` returns; the supervisor
+//! pipes stdin/stdout and inherits stderr so the child's logs
+//! land in the supervisor's stderr.
 
 use anyhow::{Context, Result};
 use std::process::Stdio;

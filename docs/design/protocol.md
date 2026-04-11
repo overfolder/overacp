@@ -107,17 +107,16 @@ populates these variables before starting the supervisor process.
 
 | Variable | Required | Description |
 |---|---|---|
-| `OVERACP_TUNNEL_URL` | yes | Full WebSocket URL including the agent UUID path, e.g. `wss://server/tunnel/<agent_id>`. |
-| `OVERACP_JWT` | yes | Bearer token for the WebSocket upgrade and the LLM proxy. See § 2.1 for the claims. |
-| `OVERACP_AGENT_ID` | yes | The agent's unique identifier. Must match the JWT `sub` claim and the `<agent_id>` in the tunnel URL. Echoed in logs. |
-| `OVERACP_ADAPTER` | no  | Which `AgentAdapter` to load. Defaults to `loop`. |
-| `OVERACP_WORKSPACE_DIR` | no | Working directory for the child agent process. Defaults to the supervisor's launch CWD. There is no hardcoded `/workspace`. |
-| `OVERACP_RECONNECT_BACKOFF_MS` | no | Test override for the reconnect backoff base. |
+| `OVERACP_TOKEN` | yes | Agent JWT (bearer token for the WebSocket upgrade). See § 2.1 for the claims. The supervisor decodes the `sub` claim locally (without signature verification, because the broker validates it authoritatively on the WebSocket upgrade) to build the tunnel URL; the broker also uses it as the routing key. |
+| `OVERACP_SERVER_URL` | yes | Base URL of the broker, e.g. `https://acp.example.com` or `http://localhost:8080`. The supervisor rewrites the scheme to `ws` / `wss` and appends `/tunnel/<agent_id>`. |
+| `OVERACP_WORKSPACE` | no | Working directory the child agent process should treat as its workspace. Defaults to `/workspace`. Forwarded to `LoopAdapter` as the `OVERACP_WORKSPACE` env var on the child. |
+| `OVERACP_AGENT_BINARY` | no | Path or basename of the child-agent binary. Resolved by the active `AgentAdapter` impl. Defaults to `overloop`. |
 
 The `OVERACP_*` namespace is reserved for the supervisor; any other
-environment variables are forwarded verbatim to the child so
-deployments can pass adapter-specific config (e.g.
-`ANTHROPIC_API_KEY`) without the broker having to know about it.
+environment variables are inherited by the child process so
+deployments can pass adapter-specific config (e.g. `LLM_API_KEY`,
+`LLM_API_URL`, `OVERFOLDER_MODEL` for `overloop`) without the broker
+having to know about it.
 
 The recommended **agent JWT TTL is 30 days**. Rotation is deferred
 (tracked in [`TODO.md`](../../TODO.md) and `SPEC.md` open questions);

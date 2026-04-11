@@ -10,6 +10,7 @@ members = [
 
 [workspace.dependencies]
 tokio = { version = "1.40", default-features = false }
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio", "json"] }
 futures-util = { version = "0.3", default-features = false }
 dashmap = "6"

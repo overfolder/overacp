@@ -1,4 +1,6 @@
-//! WebSocket tunnel client. Lifted from `overfolder/overlet/src/tunnel.rs`.
+//! WebSocket tunnel client: opens the single WebSocket connection
+//! the supervisor uses to talk to the broker, with exponential
+//! backoff and retry-forever semantics on dropped connections.
 
 use anyhow::{Context, Result};
 use futures_util::stream::{SplitSink, SplitStream};

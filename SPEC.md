@@ -57,7 +57,7 @@ identity. Those are jobs for whichever system wraps it.
 - **No compute provisioning.** over/ACP does not start, stop, scale,
   or schedule the environments where agents run. An external
   orchestrator launches compute and points the agent at the broker
-  via `OVERACP_TUNNEL_URL` and `OVERACP_JWT`.
+  via `OVERACP_SERVER_URL` and `OVERACP_TOKEN`.
 - **No agent enrollment API.** Connecting with a valid agent JWT
   *is* the enrollment. There is no `POST /agents`.
 - **No identity hierarchy.** No tier, plan, or entitlement claim in
@@ -121,7 +121,7 @@ the Rust type and the design-doc update in the same commit.
 │   ┌────────────────────────▼─────────────────────────────────┐      │
 │   │  Compute environment (VM, container, laptop, ...)        │      │
 │   │  ── launched by external orchestrator                    │      │
-│   │  ── only knows OVERACP_TUNNEL_URL + OVERACP_JWT          │      │
+│   │  ── only knows OVERACP_SERVER_URL + OVERACP_TOKEN        │      │
 │   │  ── no DB credentials, no operator secrets               │      │
 │   │                                                          │      │
 │   │  ┌────────────────────────────────────────────────────┐ │      │
@@ -298,9 +298,11 @@ access; the agent VM only sees the serialized result.
 The agent holds the returned messages in memory and accumulates
 new messages across turns. It does not call `initialize` again
 unless the process restarts (cold start). "Resume by agent_id"
-is implicit: cold-start the agent with the same `OVERACP_AGENT_ID`,
-and the `BootProvider` hook looks up the conversation history in the
-operator's database using `claims.sub`.
+is implicit: cold-start the agent with a JWT whose `sub` matches
+the original `agent_id` (the supervisor decodes `sub` from
+`OVERACP_TOKEN` to build the tunnel URL), and the `BootProvider`
+hook looks up the conversation history in the operator's database
+using `claims.sub`.
 
 ### `session/message` — push delivery
 
