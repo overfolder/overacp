@@ -424,10 +424,7 @@ async fn test_content_length_stop() {
 
 #[tokio::test]
 async fn test_content_filter_stop() {
-    let llm = MockLlm::new(vec![make_text_response(
-        "sorry",
-        StopReason::ContentFilter,
-    )]);
+    let llm = MockLlm::new(vec![make_text_response("sorry", StopReason::ContentFilter)]);
     let mut acp = MockAcp::new(true);
     let mut registry = ToolRegistry::new();
     let mut messages = vec![user_msg("Hi")];

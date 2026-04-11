@@ -139,8 +139,7 @@ mod tests {
         drop(listener); // now the port is free but not listening
 
         let url = format!("ws://{addr}/tunnel/test");
-        let connect_task =
-            tokio::spawn(async move { connect_with_retry(&url, "tok").await });
+        let connect_task = tokio::spawn(async move { connect_with_retry(&url, "tok").await });
 
         // Advance virtual time through several backoff windows.
         // The loop is connect_err → sleep(1) → connect_err → sleep(2)

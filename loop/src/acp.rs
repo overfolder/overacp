@@ -172,7 +172,10 @@ impl<R: Read, W: Write> AcpService for AcpClient<R, W> {
         let params = TextDelta {
             text: text.to_string(),
         };
-        self.send_notification(methods::STREAM_TEXT_DELTA, Some(serde_json::to_value(params)?))
+        self.send_notification(
+            methods::STREAM_TEXT_DELTA,
+            Some(serde_json::to_value(params)?),
+        )
     }
 
     fn stream_activity(&mut self, activity: &str) -> Result<()> {
@@ -183,7 +186,10 @@ impl<R: Read, W: Write> AcpService for AcpClient<R, W> {
             kind: "log".to_string(),
             data: Value::String(activity.to_string()),
         };
-        self.send_notification(methods::STREAM_ACTIVITY, Some(serde_json::to_value(params)?))
+        self.send_notification(
+            methods::STREAM_ACTIVITY,
+            Some(serde_json::to_value(params)?),
+        )
     }
 
     fn stream_tool_call(&mut self, id: &str, name: &str, arguments: &Value) -> Result<()> {
@@ -192,7 +198,10 @@ impl<R: Read, W: Write> AcpService for AcpClient<R, W> {
             name: name.to_string(),
             arguments: arguments.clone(),
         };
-        self.send_notification(methods::STREAM_TOOL_CALL, Some(serde_json::to_value(params)?))
+        self.send_notification(
+            methods::STREAM_TOOL_CALL,
+            Some(serde_json::to_value(params)?),
+        )
     }
 
     fn stream_tool_result(&mut self, id: &str, content: &Value, is_error: bool) -> Result<()> {
@@ -287,9 +296,9 @@ fn session_message_to_llm_message(params: SessionMessageParams) -> Result<Messag
     let content = match params.content {
         Value::Null => None,
         Value::String(s) => Some(Content::Text(s)),
-        other @ (Value::Array(_) | Value::Object(_)) => Some(
-            serde_json::from_value(other).context("parse session/message content blocks")?,
-        ),
+        other @ (Value::Array(_) | Value::Object(_)) => {
+            Some(serde_json::from_value(other).context("parse session/message content blocks")?)
+        }
         other => Some(Content::Text(other.to_string())),
     };
 
@@ -469,10 +478,7 @@ mod tests {
         // An unknown role is caught at the `SessionMessageParams`
         // deserialization boundary by the protocol crate's typed
         // `Role` enum, so we just assert the call fails.
-        let input = notification(
-            "session/message",
-            json!({"role": "alien", "content": "hi"}),
-        );
+        let input = notification("session/message", json!({"role": "alien", "content": "hi"}));
         let mut acp = mock_acp(&input);
         let err = acp.next_push().unwrap_err();
         let msg = err.to_string().to_lowercase();

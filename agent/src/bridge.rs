@@ -145,7 +145,10 @@ mod tests {
     impl Sink<WsMessage> for VecSink {
         type Error = WsError;
 
-        fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
 
@@ -157,11 +160,17 @@ mod tests {
             Ok(())
         }
 
-        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
 
-        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
     }
@@ -316,9 +325,6 @@ mod tests {
 
         let exit = run(ws_read, ws_sink, &mut stdin, stdout).await;
         assert_eq!(exit, BridgeExit::TunnelClosed);
-        assert_eq!(
-            String::from_utf8(stdin).unwrap(),
-            "from-server\n"
-        );
+        assert_eq!(String::from_utf8(stdin).unwrap(), "from-server\n");
     }
 }

@@ -52,9 +52,7 @@ impl KillOnDrop {
     }
 }
 
-use common::{
-    cargo_debug_bin, mint_admin, mint_agent, push_body, spawn_broker, spawn_mock_llm,
-};
+use common::{cargo_debug_bin, mint_admin, mint_agent, push_body, spawn_broker, spawn_mock_llm};
 
 static BUILD_ONCE: Once = Once::new();
 
@@ -225,9 +223,7 @@ async fn wait_for_connected(
 /// panic message becomes useless. UTF-8 decoding errors on a single
 /// chunk are logged via `eprintln!` and skipped, since the SSE
 /// body is always text/plain.
-async fn find_turn_end<S>(
-    stream: &mut S,
-) -> Result<Option<serde_json::Value>, reqwest::Error>
+async fn find_turn_end<S>(stream: &mut S) -> Result<Option<serde_json::Value>, reqwest::Error>
 where
     S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
 {

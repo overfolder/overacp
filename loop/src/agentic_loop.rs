@@ -158,11 +158,7 @@ pub async fn run(
                     Err(err) => (format!("Error: {}", err), true),
                 };
 
-                let _ = acp.stream_tool_result(
-                    &tc.id,
-                    &Value::String(content.clone()),
-                    is_error,
-                );
+                let _ = acp.stream_tool_result(&tc.id, &Value::String(content.clone()), is_error);
 
                 messages.push(Message {
                     role: Role::Tool,
