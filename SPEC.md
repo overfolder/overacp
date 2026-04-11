@@ -197,7 +197,11 @@ HTTP:
 ```
 POST /tokens
 Authorization: Bearer <admin-jwt>
-Body: { "agent_id": "uuid", "user": "uuid", "ttl_secs": 2592000 }
+Body: {
+  "agent_id": "uuid",
+  "user":     "uuid"?,     // optional
+  "ttl_secs": 2592000?     // optional, defaults to 30 days
+}
 
 Response: { "token": "eyJ...", "claims": { "sub": "...", ... } }
 ```
@@ -206,7 +210,8 @@ Response: { "token": "eyJ...", "claims": { "sub": "...", ... } }
 (no HTTP round-trip):
 
 ```rust
-let claims = Claims::agent(agent_id, user_id, ttl);
+let issuer = state.authenticator.issuer().to_string();
+let claims = Claims::agent(agent_id, Some(user_id), ttl_secs, issuer);
 let jwt = state.authenticator.mint(&claims)?;
 ```
 
@@ -365,6 +370,7 @@ pub trait QuotaPolicy: Send + Sync + 'static {
 pub trait Authenticator: Send + Sync + 'static {
     fn validate(&self, token: &str) -> Result<Claims, AuthError>;
     fn mint(&self, claims: &Claims) -> Result<String, AuthError>;
+    fn issuer(&self) -> &str;
 }
 ```
 

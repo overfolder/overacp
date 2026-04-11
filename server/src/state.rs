@@ -28,10 +28,13 @@ pub struct AppState {
     pub providers: Arc<ProviderRegistry>,
     pub pool_runtimes: Arc<PoolRuntimes>,
     pub authenticator: Arc<dyn Authenticator>,
+    /// Legacy session table kept alive during the tunnel dual-
+    /// registration window. `run_tunnel` registers in both
+    /// `sessions` and `registry` so the Phase 5 cleanup can drop
+    /// this field without a knock-on behavioural change.
     pub sessions: SessionManager,
-    /// New broker-shaped per-agent routing table. Replaces
-    /// `sessions` once the legacy `/agents/{id}/...` REST surface
-    /// is rewritten in Phase 4b.
+    /// Broker-shaped per-agent routing table. The source of truth
+    /// for every REST handler in `api/agents.rs`.
     pub registry: AgentRegistry,
     /// Bounded per-agent buffer for `session/message` pushes that
     /// arrive while the agent's tunnel is disconnected.

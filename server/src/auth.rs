@@ -95,6 +95,12 @@ pub trait Authenticator: Send + Sync + 'static {
     /// Encode + sign claims into a JWT. Used by `POST /tokens` and by
     /// operators that embed the server in-process.
     fn mint(&self, claims: &Claims) -> Result<String, AuthError>;
+
+    /// The issuer string this authenticator stamps into minted
+    /// tokens (and expects on validation). Exposed so higher-level
+    /// helpers like `POST /tokens` can build `Claims` with the
+    /// right `iss` field without hard-coding it.
+    fn issuer(&self) -> &str;
 }
 
 pub struct StaticJwtAuthenticator {
@@ -109,14 +115,13 @@ impl StaticJwtAuthenticator {
             issuer: issuer.into(),
         }
     }
-
-    /// Issuer that newly-minted tokens will carry.
-    pub fn issuer(&self) -> &str {
-        &self.issuer
-    }
 }
 
 impl Authenticator for StaticJwtAuthenticator {
+    fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
     fn validate(&self, token: &str) -> Result<Claims, AuthError> {
         let mut validation = Validation::default();
         validation.set_issuer(&[&self.issuer]);

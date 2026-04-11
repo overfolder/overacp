@@ -25,6 +25,11 @@ pub enum ApiError {
     /// unavailable. Mapped to HTTP 503.
     #[error("service unavailable: {0}")]
     ServiceUnavailable(String),
+    /// An internal server error the client cannot fix by
+    /// retrying differently (e.g. a crypto/mint failure). Mapped
+    /// to HTTP 500.
+    #[error("internal: {0}")]
+    Internal(String),
     /// Body parsed as JSON but did not match the flat-string-map
     /// shape required by `PoolConfig`.
     #[error("malformed pool config: {0}")]
@@ -67,6 +72,11 @@ impl IntoResponse for ApiError {
             Self::ServiceUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({ "error": "service_unavailable", "message": msg })),
+            )
+                .into_response(),
+            Self::Internal(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal", "message": msg })),
             )
                 .into_response(),
             Self::MalformedConfig(e) => (
@@ -126,5 +136,25 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"], "unauthorized");
         assert_eq!(v["message"], "nope");
+    }
+
+    #[tokio::test]
+    async fn service_unavailable_maps_to_503() {
+        let resp = ApiError::ServiceUnavailable("queue full".into()).into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "service_unavailable");
+        assert_eq!(v["message"], "queue full");
+    }
+
+    #[tokio::test]
+    async fn internal_maps_to_500() {
+        let resp = ApiError::Internal("mint failed".into()).into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "internal");
+        assert_eq!(v["message"], "mint failed");
     }
 }

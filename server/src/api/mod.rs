@@ -1,17 +1,21 @@
-//! REST surface for the controlplane.
+//! REST surface for the broker.
 //!
-//! Implements `docs/design/controlplane.md` § 3.1 (compute
-//! providers) and § 3.2 (compute pools). Nodes (§ 3.3), agents
-//! (§ 3.4), and the SSE/cancel surfaces (§ 3.5) land in
-//! follow-ups.
+//! Two sets of endpoints live under this module during the ongoing
+//! refactor:
 //!
-//! Module layout:
-//! - [`pool_config`] — typed pool config (parse-don't-validate).
-//! - [`providers`]   — server-side `ProviderPlugin` shim around
-//!   `compute::ComputeProvider` plus a registry.
-//! - [`dto`]         — wire types for the REST surface.
-//! - [`error`]       — `ApiError` + axum `IntoResponse` mapping.
-//! - [`routes`]      — handlers and the `Router` constructor.
+//! - **Broker-shaped** (Phase 4b): [`agents`] and [`tokens`]. The
+//!   new `POST /tokens`, `GET /agents`, `GET /agents/{id}`,
+//!   `DELETE /agents/{id}`, `POST /agents/{id}/messages`,
+//!   `GET /agents/{id}/stream`, and `POST /agents/{id}/cancel`
+//!   routes defined in `SPEC.md`.
+//! - **Legacy controlplane** (awaiting removal in Phase 5):
+//!   [`pool_config`], [`providers`], [`dto`], [`nodes`],
+//!   [`routes`]. The `/compute/*` REST surface from the superseded
+//!   controlplane architecture. Still mounted behind HTTP Basic
+//!   auth so existing integrations keep working until Phase 5.
+//!
+//! [`error`] is shared: `ApiError` is the single handler-facing
+//! error type for everything in this module.
 
 pub mod agents;
 pub mod dto;
@@ -20,8 +24,9 @@ pub mod nodes;
 pub mod pool_config;
 pub mod providers;
 pub mod routes;
+pub mod tokens;
 
-pub use agents::router as agents_router;
+pub use tokens::router as tokens_router;
 pub use dto::{
     CreatePoolRequest, PoolConfigBody, PoolStatusResponse, PoolSummary, PoolView, ProviderInfo,
     ProvidersList, ValidationFieldError, ValidationResult,

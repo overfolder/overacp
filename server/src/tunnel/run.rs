@@ -53,9 +53,10 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
 
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
-    // Register in both the legacy session table (still used by the
-    // controlplane-era /agents/{id}/... REST surface) and the new
-    // agent registry. Phase 4b drops the legacy half.
+    // Register in both the legacy session table and the new agent
+    // registry. The legacy `sessions` table is no longer read by
+    // any REST handler but stays live during the dual-registration
+    // window so Phase 5 can drop it without a behavioural change.
     ctx.sessions.insert(
         agent_id,
         TunnelHandle {
