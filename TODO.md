@@ -47,8 +47,11 @@ crate landed. All items block calling the loop "protocol-conformant".
       constants instead of hard-coding strings in `loop/src/acp.rs`.
 - [ ] Loop's `Message` / `InitializeResult` types are replaced by the
       ones in `overacp_protocol::messages`.
-- [ ] On `session/message` notification, loop fetches the message body
-      via `poll/newMessages` instead of re-running `initialize`.
+- [ ] Loop reads the message body inline from the `session/message`
+      notification's `params` field instead of polling. The
+      `poll/newMessages` method has been removed from the protocol.
+- [ ] Loop emits `turn/end` (fire-and-forget notification) at the
+      end of each turn instead of the old `turn/save` request.
 - [ ] Loop emits `stream/toolCall` and `stream/toolResult`
       notifications around every tool invocation.
 - [ ] **Tool sources unified into one registry**, ordered:
@@ -70,128 +73,100 @@ crate landed. All items block calling the loop "protocol-conformant".
       deployment adapters can supply tool descriptors without
       touching the supervisor.
 
-## 0.4 — `overacp-server`: compute-pool controlplane (current)
+## 0.4 — `overacp-server`: stateless message broker (landed)
 
-The centerpiece. Stand up an HTTP + WebSocket service that **owns
-compute provisioning, agent lifecycle, and protocol routing**.
-Full design in
-[`docs/design/controlplane.md`](./docs/design/controlplane.md).
+The centerpiece. A small HTTP + WebSocket router that terminates
+agent tunnels and delegates substance to four operator hooks.
+Compute provisioning, persistence, and agent lifecycle are
+**out of scope** for the broker — see `SPEC.md`.
 
-### Persistence + traits
+### Operator hooks
 
-- [ ] `SessionStore` trait covering conversations + messages, plus
-      three new tables for compute pools, compute nodes, and agents.
-- [ ] Reference impls: in-memory + SQLite. Postgres later.
-- [ ] `Authenticator` trait. Reference impl: static JWT (HS256).
-- [x] HTTP Basic auth on control-plane endpoints (`/compute/*`, admin
-      `/agents`), backed by an htpasswd(5) file (bcrypt only) via
-      `OVERACP_BASIC_AUTH_FILE`. `OVERACP_DEFAULT_USER_ID` supplies the
-      user UUID attributed to Basic-auth writes. See
-      `docs/design/controlplane.md` § 3.
-- [ ] `QuotaPolicy` trait. Reference impl: no-op (everything allowed).
-- [ ] `ToolHost` trait. Reference impl wired to the `tools/list` /
-      `tools/call` ACP surface (uses the `overacp-tools-mcp`
-      adapter from 0.6 once it lands; until then, in-memory tool
-      registration only).
+- [x] `BootProvider` trait. Reference impl: `DefaultBootProvider`
+      (empty bootstrap). Backs `initialize`.
+- [x] `ToolHost` trait. Reference impl: `DefaultToolHost` (empty
+      catalogue, `call` returns `NotFound`). The `overacp-tools-mcp`
+      MCP adapter from 0.6 will be a drop-in replacement.
+- [x] `QuotaPolicy` trait. Reference impl: `DefaultQuotaPolicy`
+      (no-op, everything allowed).
+- [x] `Authenticator` trait with `validate`, `mint`, `issuer`.
+      Reference impl: `StaticJwtAuthenticator` (HS256 against a
+      static signing key).
 
-### Compute provisioning
+### In-memory routing state
 
-- [ ] `ComputeProvider` trait per `docs/design/controlplane.md` § 4.
-- [ ] `ResolvedConfig` + `${provider:path:key}` secret reference
-      machinery (`env`, `file`; vault is a future hook).
-- [ ] `overacp-compute-local` reference impl: spawns
-      `overacp-agent` as a local subprocess. Ships in the same
-      milestone so the demo works without infra.
-- [ ] `ProviderRegistry` populated at startup. Compile-time feature
-      flags for which providers to include.
+- [x] `AgentRegistry` — per-agent routing table keyed on the JWT
+      `sub`, with a bounded recently-disconnected log.
+- [x] `MessageQueue` — bounded per-agent buffer for
+      `session/message` pushes that arrive while the tunnel is
+      disconnected. Drained on reconnect.
+- [x] `StreamBroker` — in-memory broadcast fan-out of `stream/*`
+      and `turn/end` frames to SSE subscribers.
 
-### REST API surface
+### Tunnel + dispatch
+
+- [x] WebSocket tunnel at `/tunnel/:agent_id`, JWT-gated on the
+      agent role with `sub == agent_id`.
+- [x] JSON-RPC 2.0 dispatch that delegates `initialize`,
+      `tools/list`, `tools/call`, `quota/check`, and
+      `quota/update` to the operator hooks.
+- [x] `turn/end` fire-and-forget notification (replacing the old
+      request-shaped `turn/save`), `session/cancel`, and
+      inline `session/message` body delivery (no `poll/newMessages`).
+
+### REST surface
 
 Served at the root — no `/api/v{n}` prefix; breaking changes ride
-software semver. Modeled on Kafka Connect's connector API. Endpoints
-listed in full in `docs/design/controlplane.md` § 3.
+software semver.
 
-- [ ] `GET /compute/providers`,
-      `GET /compute/providers/{type}`,
-      `POST /compute/providers/{type}/config/validate`.
-- [ ] `GET /compute/pools`, `POST /compute/pools`,
-      `GET /compute/pools/{name}`,
-      `GET|PUT /compute/pools/{name}/config`,
-      `DELETE /compute/pools/{name}`,
-      `GET /compute/pools/{name}/status`,
-      `POST /compute/pools/{name}/{pause,resume}`.
-- [ ] `GET /compute/pools/{pool}/nodes`,
-      `GET /compute/pools/{pool}/nodes/{id}`,
-      `DELETE /compute/pools/{pool}/nodes/{id}`,
-      `POST /compute/pools/{pool}/nodes/{id}/exec`,
-      `GET /compute/pools/{pool}/nodes/{id}/logs` (SSE).
-- [ ] `GET /agents`, `POST /agents`, `GET /agents/{id}`,
-      `DELETE /agents/{id}`, `GET /agents/{id}/status`. Describe
-      response includes `compute = { provider_type, pool, node_id }`.
-- [x] REST adapters over the wire protocol:
-      `POST /agents/{id}/messages` (enqueues + emits `session/message`),
-      `GET /agents/{id}/messages?since=...`,
-      `GET /agents/{id}/stream` (SSE fan-out of `stream/*`),
-      `POST /agents/{id}/cancel`. Agent creation (§ 3.4) still
-      unlanded, so these currently require a pre-seeded agent row.
+- [x] `POST /tokens` (admin-only) — mint agent JWTs via the
+      `Authenticator` hook.
+- [x] `GET /agents` (admin-only) — list connected + recently
+      disconnected agents.
+- [x] `GET /agents/{id}` (admin-only) — describe one agent.
+- [x] `DELETE /agents/{id}` (admin-only) — force-disconnect.
+- [x] `POST /agents/{id}/messages` (admin or scoped agent) —
+      push `session/message`, buffer if disconnected, 503 on
+      per-agent queue overflow.
+- [x] `GET /agents/{id}/stream` (admin or scoped agent) — SSE
+      fan-out.
+- [x] `POST /agents/{id}/cancel` (admin or scoped agent) —
+      inject `session/cancel`.
+- [x] JWT auth middleware in `routes.rs`: `require_admin` for the
+      first four endpoints, `require_agent_or_admin` for the
+      streaming endpoints (accepts an agent JWT whose `sub`
+      matches the path `{id}`).
 
-### Tunnel + LLM proxy
+### 0.4 non-blockers (deferred)
 
-- [ ] Lift the WS hub + dispatcher from
-      `overfolder/controlplane/src/tunnel.rs` and route methods
-      against `SessionStore`/`QuotaPolicy`/`ToolHost`.
-- [ ] OpenAI-compatible LLM proxy with auth/model-routing/metering
-      hooks.
+Tracked here so they don't get lost. None of them block the
+broker itself.
 
-### Tests
-
-- [ ] Integration test: spin up the server with the `local-process`
-      provider, `POST /compute/pools` for a local pool,
-      `POST /agents`, `POST /agents/{id}/messages`, assert
-      `GET /agents/{id}/stream` produces a `stream/textDelta`.
-- [ ] Round-trip tests for every REST endpoint against captured
-      JSON fixtures.
-
-### 0.4 non-blockers (deferred, do not gate the milestone)
-
-These were ratified out of the 0.4 acceptance gate and tracked here
-so they don't get lost. None of them block the
-`server/tests/acceptance_0_4.rs` end-to-end test.
-
-- [ ] Agent JWT rotation strategy. 0.4 mints once with a 30-day TTL
-      per `docs/design/protocol.md` § 2.4 and never refreshes.
-- [ ] SQLite `SessionStore` impl + migration story. 0.4 ships
-      in-memory only; pool runtime rehydration
-      (`docs/design/controlplane.md` § 6.1) is the contract that
-      will make the SQLite swap a non-event.
-- [ ] Idle reaper for reusable nodes (`node_reuse = true` pools).
-      0.4 leaves a detached node in place forever; the reaper is
-      what eventually collects it.
-- [ ] `max_nodes` and `idle_ttl_s` pool config keys are reserved in
-      `docs/design/controlplane.md` § 3.2.1 but not enforced in 0.4.
-- [ ] Streaming `POST /compute/pools/{pool}/nodes/{id}/exec`
-      (probably an SSE sibling endpoint, must stay non-breaking
-      with the one-shot path).
+- [ ] Agent JWT rotation strategy. Currently mints once with a
+      30-day TTL per `docs/design/protocol.md` § 2.4 and never
+      refreshes.
+- [ ] Persistent `MessageQueue` for multi-replica deployments
+      (Redis stream, NATS jetstream). Current in-memory queue
+      survives reconnects but not broker restarts.
 - [ ] Streaming completions (multiple `stream/textDelta` per turn,
-      proper turn terminator framing). 0.4 only emits a single
-      `stream/textDelta` + terminator.
+      proper turn terminator framing).
 
-## 0.5 — production providers + workspace sync + demo
+## 0.5 — workspace sync + demo
 
-- [ ] `overacp-compute-docker` — Docker daemon.
-- [ ] `overacp-compute-morph` — Morph Cloud, lifted from
-      `overfolder/backend/src/routes/workspace.rs`.
-- [ ] `overacp-workspace-gcs` — `WorkspaceSync` impl, lifts the
-      planned Overfolder GCS work. See
+Compute provisioning has moved out of the broker's scope. The
+`overacp-compute-core` crate remains a standalone library that
+operators pull in if they want a ready-made `ComputeProvider`
+abstraction; Docker/Morph backends are operator territory.
+
+- [ ] `overacp-workspace-gcs` — `WorkspaceSync` impl for Google
+      Cloud Storage. See
       [`docs/design/workspace-sync.md`](./docs/design/workspace-sync.md).
 - [ ] `overacp-workspace-s3` — S3-compatible object store.
 - [ ] `overacp-workspace-rclone` — wraps the rclone CLI.
 - [ ] `WorkspaceSyncRegistry` in the agent crate, dispatching from
-      `OVERACP_WORKSPACE_SYNC` env var or the controlplane-supplied
-      descriptor.
-- [ ] End-to-end demo: clone repo, `cargo run`, then
-      `curl POST /compute/pools` (local), then
-      `POST /agents`, then `POST /agents/{id}/messages`,
+      `OVERACP_WORKSPACE_SYNC` env var.
+- [ ] End-to-end demo: clone repo, `cargo run`, mint an admin JWT,
+      `POST /tokens` for an agent, `POST /agents/{id}/messages`,
       observe the SSE stream.
 
 ## 0.6 — `overacp-tools-mcp` + Overfolder cutover
@@ -199,12 +174,12 @@ so they don't get lost. None of them block the
 - [ ] `overacp-tools-mcp`: `ToolHost` impl that fans out to N MCP
       client connections, namespaces tool names per server, injects
       per-session short-lived credentials.
-- [ ] Wire `overacp-tools-mcp` into the controlplane's default
-      `ToolHost`.
-- [ ] Shrink `overfolder/controlplane` to ~80 LOC of glue: Postgres
-      `SessionStore`, Telegram channel, Overslash auth provider.
-- [ ] Move Morph integration out of `overfolder/backend` and into
-      `overacp-compute-morph` (this repo).
+- [ ] Wire `overacp-tools-mcp` as the operator's `ToolHost`
+      implementation in their own backend.
+- [ ] Shrink `overfolder/controlplane` to glue code: its own
+      persistence layer (whatever store it chooses) behind a
+      `BootProvider` impl, Telegram channel, Overslash auth
+      provider.
 - [ ] Archive `overfolder/overloop`.
 
 ## 1.0 — protocol + REST freeze

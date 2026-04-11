@@ -14,23 +14,24 @@ For a higher-level architectural picture see [`SPEC.md`](../../SPEC.md).
 
 ## 1. Transport
 
-A single WebSocket connection per session, opened by the agent and
+A single WebSocket connection per agent, opened by the agent and
 terminated by the server. URL shape:
 
 ```
-wss://<server-host>/tunnel/<session-id>
+wss://<server-host>/tunnel/<agent-id>
 Authorization: Bearer <jwt>
 ```
 
-The `<session-id>` is the conversation UUID. The agent obtains it by
-decoding the `conv` claim from its JWT *without* signature
-verification (`overacp_protocol::jwt::peek_claims_unverified`); the
-server still validates the bearer token authoritatively when accepting
-the upgrade.
+The `<agent-id>` is the agent UUID and matches the `sub` claim of the
+JWT. The agent obtains it from its boot environment
+(`OVERACP_AGENT_ID`); the server validates the bearer token
+authoritatively at upgrade time and rejects the connection if the
+JWT's `sub` does not match the path, or if the token does not carry
+the `agent` role.
 
-Reconnects use exponential backoff (1s → 30s, capped). The session
+Reconnects use exponential backoff (1s → 30s, capped). The agent
 identifier is stable across reconnects, so the server is expected to
-preserve session state and resume streaming on a fresh tunnel.
+restore the agent's routing state on a fresh tunnel.
 
 ### 1.1 Frame format
 
@@ -58,13 +59,23 @@ short-lived JWT. The crate exposes `Claims`, `mint_token`,
 
 ### 2.1 Claims
 
-| Field  | Type   | Meaning                                            |
-|--------|--------|----------------------------------------------------|
-| `sub`  | UUID   | Agent identity (subject).                          |
-| `user` | UUID   | User identity.                                     |
-| `conv` | UUID   | Conversation ID this token is scoped to.          |
-| `exp`  | i64    | Expiration as a Unix timestamp.                    |
-| `iss`  | string | Issuer string. Must match what the server expects. |
+| Field  | Type        | Meaning                                                              |
+|--------|-------------|----------------------------------------------------------------------|
+| `sub`  | UUID        | Subject. For `agent` tokens this is the `agent_id` (routing key). For `admin` tokens this is the operator identity. |
+| `role` | string      | `"admin"` or `"agent"`. Decides which routes the token can hit.      |
+| `user` | UUID? (opt) | Optional opaque user identifier. Present only on agent tokens when the operator chooses to forward it. The broker never inspects it. |
+| `exp`  | i64         | Expiration as a Unix timestamp.                                      |
+| `iss`  | string      | Issuer string. Must match what the server expects.                   |
+
+The broker has exactly two token types:
+
+- **Admin JWT** — held by the operator backend. Full access to every
+  REST endpoint, can mint agent tokens via `POST /tokens`. Cannot
+  hold a tunnel.
+- **Agent JWT** — held by the agent process inside the compute
+  environment, and optionally by clients (web frontend) for a
+  specific agent. Scoped to a single `agent_id`; can hold the
+  matching tunnel and call the agent-scoped REST endpoints.
 
 over/ACP intentionally has **no tier, plan, or entitlement claim** in
 the protocol. Quota and tier policy belong to the deployment, not the
@@ -91,27 +102,27 @@ multi-tenant deployment described in `SPEC.md`.
 The `overacp-agent` supervisor is configured **exclusively through
 environment variables**. There is no config file, no CLI flags
 beyond `--help`/`--version`, and no positional arguments. The
-controlplane populates these variables on `NodeSpec.env` when it
-calls `ComputeProvider::create_node`; providers MUST forward them
-verbatim to the agent process.
+operator (or whichever orchestrator launches the compute environment)
+populates these variables before starting the supervisor process.
 
 | Variable | Required | Description |
 |---|---|---|
-| `OVERACP_TUNNEL_URL` | yes | Full WebSocket URL including the conversation UUID path, e.g. `wss://server/tunnel/<conv_uuid>`. |
+| `OVERACP_TUNNEL_URL` | yes | Full WebSocket URL including the agent UUID path, e.g. `wss://server/tunnel/<agent_id>`. |
 | `OVERACP_JWT` | yes | Bearer token for the WebSocket upgrade and the LLM proxy. See § 2.1 for the claims. |
-| `OVERACP_AGENT_ID` | yes | The controlplane's `agents.id` for this supervisor process. Echoed in logs and the `sub` claim. |
+| `OVERACP_AGENT_ID` | yes | The agent's unique identifier. Must match the JWT `sub` claim and the `<agent_id>` in the tunnel URL. Echoed in logs. |
 | `OVERACP_ADAPTER` | no  | Which `AgentAdapter` to load. Defaults to `loop`. |
 | `OVERACP_WORKSPACE_DIR` | no | Working directory for the child agent process. Defaults to the supervisor's launch CWD. There is no hardcoded `/workspace`. |
 | `OVERACP_RECONNECT_BACKOFF_MS` | no | Test override for the reconnect backoff base. |
 
-The `OVERACP_*` namespace is reserved for the supervisor; providers
-forward any additional `NodeSpec.env` entries verbatim so deployments
-can pass adapter-specific config (e.g. `ANTHROPIC_API_KEY`) without
-the controlplane having to know about it.
+The `OVERACP_*` namespace is reserved for the supervisor; any other
+environment variables are forwarded verbatim to the child so
+deployments can pass adapter-specific config (e.g.
+`ANTHROPIC_API_KEY`) without the broker having to know about it.
 
 The recommended **agent JWT TTL is 30 days**. Rotation is deferred
 (tracked in [`TODO.md`](../../TODO.md) and `SPEC.md` open questions);
-0.4 mints once at agent creation and does not refresh.
+the current reference server mints once via `POST /tokens` and does
+not refresh.
 
 ## 3. Method catalogue
 
@@ -122,9 +133,10 @@ Each method is tagged with its **origin**:
 
 - **ACP** — borrowed verbatim from the Zed/Anthropic Agent Client
   Protocol so external harnesses can plug in unchanged.
-- **MCP** — borrowed verbatim from the Model Context Protocol so the
-  controlplane-hosted tool host stays a thin re-export of upstream
-  MCP servers (see `SPEC.md` § Tool model, case A).
+- **MCP** — borrowed verbatim from the Model Context Protocol.
+  The operator's `ToolHost` hook typically fans out to one or more
+  MCP clients and re-exposes them through `tools/list` / `tools/call`
+  verbatim, so the wire names match upstream unchanged.
 - **extension** — over/ACP-specific. No upstream standard covers
   these; the names are ours.
 
@@ -132,12 +144,12 @@ Each method is tagged with its **origin**:
 |---------------------|------------|-----------------|--------------|
 | `initialize`        | ACP        | agent → server  | request      |
 | `session/message`   | extension  | server → agent  | notification |
+| `session/cancel`    | extension  | server → agent  | notification |
 | `tools/list`        | MCP        | agent → server  | request      |
 | `tools/call`        | MCP        | agent → server  | request      |
-| `turn/save`         | extension  | agent → server  | request      |
 | `quota/check`       | extension  | agent → server  | request      |
 | `quota/update`      | extension  | agent → server  | request      |
-| `poll/newMessages`  | extension  | agent → server  | request      |
+| `turn/end`          | extension  | agent → server  | notification |
 | `stream/textDelta`  | extension  | agent → server  | notification |
 | `stream/activity`   | extension  | agent → server  | notification |
 | `stream/toolCall`   | extension  | agent → server  | notification |
@@ -146,69 +158,83 @@ Each method is tagged with its **origin**:
 
 ### 3.1 Lifecycle
 
-`initialize` is the first call after the tunnel is up. The server
-returns the system prompt, the recent conversation history, the
-conversation ID, and an opaque `tools_config` blob the agent will
-treat as pass-through state.
+`initialize` is the first call after the tunnel is up, and is called
+exactly once per cold-start of the agent (not per turn). The broker
+delegates to the operator's `BootProvider` hook, which returns the
+system prompt, recent conversation history, and an opaque
+`tools_config` blob the agent will treat as pass-through state. The
+broker itself never inspects the response.
 
 ```jsonc
 // initialize response
 {
   "system_prompt": "You are a helpful assistant.",
   "messages": [ ...prior turns... ],
-  "conversation_id": "aaaa...-eeee",
   "tools_config": {}
 }
 ```
 
-`session/message` is an over/ACP extension notification from the
-server telling the agent that a new user message is available; the
-agent is expected to start its turn loop. The actual message body is
-fetched via `poll/newMessages`. Conceptually similar to ACP's
-`session/prompt` but the payload shape differs and the body lookup
-is decoupled.
+`session/message` is a server → agent notification that delivers a
+user message to a connected agent. The body travels **inline in the
+notification** — there is no separate poll round-trip. The agent
+appends the message to its in-memory history and starts its turn
+loop. If the agent is disconnected when the broker receives a push
+via `POST /agents/{id}/messages`, the broker buffers the
+notification in a bounded in-memory `MessageQueue` and drains it on
+the next reconnect, before yielding to live traffic. The buffer is
+in-memory and lossy across broker restarts.
+
+`session/cancel` is a server → agent notification that asks the
+agent to abandon its current turn. Pushed by the broker when the
+operator calls `POST /agents/{id}/cancel`.
 
 ### 3.2 Tool surface
 
-Tools are hosted **on the controlplane**, not in the agent VM. The
-server runs MCP clients against operator-configured MCP servers and
-re-exposes them through `ToolHost` as a unified `tools/list` /
-`tools/call` surface. The agent never learns which tools came from
-MCP, and the agent compute environment never touches the MCP server
-directly. This is the "case A" model from `SPEC.md`; the alternative
-of injecting MCP server configs down into the child agent process is
+Tools are hosted **on the operator's trusted side**, not in the
+agent compute environment. The broker delegates every `tools/list`
+and `tools/call` to the operator's `ToolHost` hook, which typically
+runs MCP clients against operator-configured MCP servers and
+re-exposes them through `tools/list` / `tools/call` as a unified
+surface. The agent never learns which tools came from MCP, and the
+agent compute environment never touches the MCP server directly.
+Injecting MCP server configs down into the child agent process is
 explicitly out of scope.
 
-### 3.3 Persistence and quota (extensions)
+### 3.3 Turn completion and quota (extensions)
 
-These four methods are over/ACP-specific. No upstream standard
-covers per-conversation persistence or quota signalling, so the
-names are ours.
+These extensions cover end-of-turn signalling and quota/usage
+hooks. No upstream standard covers them, so the names are ours.
 
-`turn/save` persists the messages and usage from a completed turn:
+`turn/end` is a **fire-and-forget notification** that an agent
+emits when it finishes a turn. The broker fans it out to SSE
+subscribers; persisting the turn data is the operator's job (the
+operator's SSE consumer reads `turn/end` frames out of
+`/agents/{id}/stream` and writes them to whatever store it owns).
 
 ```jsonc
-// turn/save request
+// turn/end notification
 {
-  "messages": [
-    { "role": "user", "content": "what's the weather?" },
-    { "role": "assistant", "content": "I'll check." }
-  ],
-  "usage": { "input_tokens": 100, "output_tokens": 50 }
+  "jsonrpc": "2.0",
+  "method": "turn/end",
+  "params": {
+    "messages": [
+      { "role": "user", "content": "what's the weather?" },
+      { "role": "assistant", "content": "I'll check." }
+    ],
+    "usage": { "input_tokens": 100, "output_tokens": 50 }
+  }
 }
 ```
 
-`quota/check` returns `{ "allowed": bool }`. The server's
-`QuotaPolicy` decides; the protocol carries no tier or pricing
-state. Deployments that don't bill at all can return a constant
-`{ "allowed": true }` from a no-op `QuotaPolicy`.
+`quota/check` returns `{ "allowed": bool }`. The broker delegates
+to the operator's `QuotaPolicy::check`; the protocol carries no
+tier or pricing state. Deployments that don't bill at all can return
+a constant `{ "allowed": true }` from a no-op `QuotaPolicy`.
 
-`quota/update` reports token usage to be added to the user's running
-totals. The response is an empty struct (not `()`) so it can grow
-fields later without breaking the wire format.
-
-`poll/newMessages` returns any user messages that have arrived since
-the last poll. The reference server returns up to ten at a time.
+`quota/update` reports usage to be recorded against the agent's
+running totals. The broker delegates to `QuotaPolicy::record`. The
+response is an empty struct (not `()`) so it can grow fields later
+without breaking the wire format.
 
 ### 3.4 Streaming notifications (extensions)
 
@@ -289,12 +315,13 @@ external implementations plug in without a translation layer:
   speak ACP natively, so these names let an adapter crate be a thin
   passthrough.
 - **MCP names** (`tools/list`, `tools/call`) come from the Model
-  Context Protocol. The controlplane runs MCP clients on behalf of
-  the agent and re-exposes their tools verbatim, so the wire names
-  match upstream too.
+  Context Protocol. The broker delegates to a `ToolHost` hook which
+  typically fans out to MCP clients on behalf of the agent and
+  re-exposes their tools verbatim, so the wire names match upstream
+  too.
 - **over/ACP extensions** keep names that fit the surrounding
-  semantics (`turn/save`, `quota/*`, `poll/newMessages`, `stream/*`,
-  `heartbeat`, `session/message`). These have no upstream
+  semantics (`turn/end`, `quota/*`, `stream/*`, `heartbeat`,
+  `session/message`, `session/cancel`). These have no upstream
   equivalent.
 
 The per-method origin column in § 3 makes the classification

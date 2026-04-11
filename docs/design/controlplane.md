@@ -1,6 +1,27 @@
 ---
-status: Active
+status: Superseded
 ---
+
+# Controlplane (superseded)
+
+> **Superseded by the stateless message broker model in
+> [`SPEC.md`](../../SPEC.md).** The controlplane architecture
+> described here — built around a `SessionStore` trait that owned
+> conversations, messages, compute pools, compute nodes, and agent
+> lifecycle, plus a Kafka-Connect-shaped REST API for compute
+> provisioning — has been retired in favour of a small router that
+> delegates substance to four operator hooks (`BootProvider`,
+> `ToolHost`, `QuotaPolicy`, `Authenticator`).
+>
+> The `compute/` crate (`overacp-compute-core`) survives as a
+> standalone library that operators can use directly when they need
+> the `ComputeProvider` trait, but it is no longer wired into the
+> server. Compute provisioning, persistence, and agent lifecycle
+> are explicitly out of scope for the broker.
+>
+> This document is preserved as historical context for the
+> pre-broker design. New work should target the contracts in
+> `SPEC.md` and `protocol.md`.
 
 # Controlplane
 

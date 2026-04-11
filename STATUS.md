@@ -1,24 +1,81 @@
 # over/ACP — Status
 
-**Updated:** 2026-04-07
+**Updated:** 2026-04-10
 
 ## Current milestone
 
-**0.1 — vendor `loop`** (in progress)
+**Broker refactor (in progress).** The SPEC was rewritten in commits
+59c1b29 and bbaab3f to redefine `overacp-server` as a stateless message
+broker. The code is mid-migration on `refactor/stateless-broker`:
 
-The repo currently contains a single vendored crate, `overloop`, copied
-from `overfolder/overloop`. Workspace wiring is the only structural work
-item at this stage. No protocol, server, or agent crates yet.
+- **Phase 1 (Claims + Authenticator mint)** — landed. JWT `Claims` now
+  carries `{sub, role, user?, exp, iss}`; `Authenticator` gained a
+  `mint` method; the tunnel upgrade path validates the `agent` role
+  and that the JWT `sub` matches the `<agent_id>` segment of the URL.
+  `docs/design/controlplane.md` is now marked `Superseded`.
+- **Phase 2 (operator hook traits)** — landed. New `hooks` module
+  exports `BootProvider`, `ToolHost`, and `QuotaPolicy` trait
+  contracts plus stub default implementations
+  (`DefaultBootProvider`, `DefaultToolHost`, `DefaultQuotaPolicy`).
+  `AppState` now holds `Arc<dyn ...>` for each hook with builder
+  methods (`with_boot_provider`, `with_tool_host`,
+  `with_quota_policy`) for operator-supplied impls. Defaults are
+  installed automatically so the reference server still boots
+  end-to-end without an operator stack.
+- **Phase 3 (dispatch rewrite)** — landed. Tunnel dispatch now
+  delegates `initialize`, `tools/list`, `tools/call`, `quota/check`,
+  and `quota/update` to the hooks introduced in Phase 2. The legacy
+  `turn/save` request and `poll/newMessages` request are gone;
+  `turn/end` is the new fire-and-forget agent → server notification
+  for completed turns, and `session/cancel` joins `session/message`
+  as a server → agent push. `TunnelContext` carries the hooks and
+  `routes::tunnel_upgrade` constructs it from `AppState`. The legacy
+  `SessionStore` is no longer touched by the dispatch table.
+- **Phase 4a (AgentRegistry + MessageQueue)** — landed. New
+  `server/src/registry/` module exposes `AgentRegistry` (per-agent
+  routing table keyed on the JWT `sub` with a bounded
+  recently-disconnected log) and `MessageQueue` (bounded per-agent
+  buffer of `session/message` frames pushed via REST while the
+  agent's tunnel is disconnected). Both are wired into `AppState`
+  alongside the legacy `SessionManager`. The tunnel `run_tunnel`
+  loop now registers in both tables, drains the queue on
+  (re)connect before yielding to the read loop, and unregisters on
+  disconnect.
+- **Phase 4b (new REST surface)** — landed. `server/src/api/agents.rs`
+  is rewritten against `AgentRegistry` and no longer reads from
+  `SessionStore`. Every handler in the new surface now takes
+  `Path<Uuid>` (the agent_id, matching the JWT `sub`) in place of
+  the legacy `Path<String>`:
+  `GET /agents`, `GET /agents/{id}`, `DELETE /agents/{id}`,
+  `POST /agents/{id}/messages`, `GET /agents/{id}/stream`,
+  `POST /agents/{id}/cancel`. Plus the new admin-only minting
+  endpoint `POST /tokens` in `api/tokens.rs`.
+  `POST /agents/{id}/messages` returns
+  `{ delivery: "live" | "queued" }` to distinguish inline tunnel
+  push from `MessageQueue` buffering, and 503 on queue overflow.
+  JWT middleware in `routes.rs` gates the surface in two tiers:
+  `require_admin` for the listing, describe, disconnect, and mint
+  routes; `require_agent_or_admin` for the agent-scoped streaming
+  routes where an agent JWT with matching `sub` is accepted.
+- **Phase 5 (controlplane deletion)** — landed. The legacy
+  `SessionStore` trait + `InMemoryStore`, HTTP Basic auth, and the
+  entire `/compute/*` REST surface (pools, providers, nodes) have
+  been removed from `overacp-server`. `TunnelContext` no longer
+  carries `store` or `sessions`; `AppState::new` takes a single
+  `Authenticator` argument. The server's dependency on
+  `overacp-compute-core` is gone (the crate remains available as
+  a standalone library for operators). `SessionManager` and the
+  old session-id path segment are deleted outright.
 
 ## Crates
 
 | Crate | State |
 |---|---|
-| `overloop` | Vendored, builds. Reference agent. |
-| `overacp-compute-core` | Landed. `ComputeProvider` trait + node/exec/log types + `${provider:path:key}` config resolver (env + file). Bundled providers: `local-process` (`providers::local`). |
+| `overloop` | Vendored, builds. Reference agent. Still on the controlplane-era wire shape; migration tracked in `TODO.md` § 0.3.x. |
+| `overacp-compute-core` | Landed as a standalone library. `ComputeProvider` trait + node/exec/log types + `${provider:path:key}` config resolver. The broker no longer depends on it; operators can pull it in directly. |
 | `overacp-protocol` | Not started. |
-| `overacp-agent` | Not started. |
-| `overacp-server` | Scaffolded. `SessionStore` trait + in-memory impl covering pools/nodes/agents/conversations/messages. REST surface for compute providers (§3.1), pools (§3.2), nodes (§3.3), and the agent messaging/SSE/cancel adapters (§3.5) at the root. Agent lifecycle CRUD (§3.4) not yet implemented, so §3.5 endpoints currently require a pre-seeded agent row. |
+| `overacp-agent` | Boot-config crate landed; supervisor + stdio bridge not started. |
+| `overacp-server` | Broker refactor complete on `refactor/stateless-broker`: JWT `Claims` + `mint`, operator hooks (`BootProvider`, `ToolHost`, `QuotaPolicy`) with default impls, hook-delegating tunnel dispatch, `AgentRegistry`, `MessageQueue`, and the new REST surface (`POST /tokens`, `GET /agents`, `GET /agents/{id}`, `DELETE /agents/{id}`, `POST /agents/{id}/messages`, `GET /agents/{id}/stream`, `POST /agents/{id}/cancel`) with JWT middleware gating. The legacy `SessionStore`, compute REST surface, and HTTP Basic auth have been removed. |
 | `overacp-tools-mcp` | Not started. |
 | `examples/*` | Not started. |
 

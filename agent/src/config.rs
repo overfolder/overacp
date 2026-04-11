@@ -13,11 +13,13 @@ use std::path::PathBuf;
 use thiserror::Error;
 use uuid::Uuid;
 
-/// Required: full WebSocket URL including the conversation UUID path.
+/// Required: full WebSocket URL including the agent UUID path,
+/// e.g. `wss://server/tunnel/<agent_id>`.
 pub const ENV_TUNNEL_URL: &str = "OVERACP_TUNNEL_URL";
 /// Required: bearer JWT for the tunnel and LLM proxy.
 pub const ENV_JWT: &str = "OVERACP_JWT";
-/// Required: controlplane `agents.id` for this supervisor.
+/// Required: the agent's unique identifier (matches the JWT `sub`
+/// claim and the `<agent_id>` segment of the tunnel URL).
 pub const ENV_AGENT_ID: &str = "OVERACP_AGENT_ID";
 /// Optional: which `AgentAdapter` to load. Defaults to `loop`.
 pub const ENV_ADAPTER: &str = "OVERACP_ADAPTER";
@@ -71,11 +73,12 @@ pub enum ConfigError {
 /// Parsed supervisor boot configuration.
 #[derive(Debug, Clone)]
 pub struct BootConfig {
-    /// Full WebSocket URL including the conversation UUID path.
+    /// Full WebSocket URL including the agent UUID path.
     pub tunnel_url: String,
     /// Bearer JWT for the tunnel upgrade and LLM proxy.
     pub jwt: String,
-    /// Controlplane `agents.id` for this supervisor.
+    /// Unique identifier for this agent. Matches the JWT `sub` claim
+    /// and the `<agent_id>` segment of the tunnel URL.
     pub agent_id: Uuid,
     /// Adapter name to load (defaults to [`DEFAULT_ADAPTER`]).
     pub adapter: String,

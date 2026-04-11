@@ -30,8 +30,7 @@ identity. Those are jobs for whichever system wraps it.
   and `turn/end` notifications emitted by the agent.
 - **Routes tool calls.** Agents call `tools/list` / `tools/call` over
   the tunnel; the broker dispatches them through a pluggable
-  `ToolHost` (typically a controlplane-hosted MCP fan-out implemented
-  by the operator).
+  `ToolHost` (typically an operator-run MCP fan-out).
 - **Bootstraps agents.** On `initialize` the broker delegates to a
   `BootProvider` hook supplied by the operator, which returns the
   system prompt + recent message window. The broker stores nothing.
@@ -197,7 +196,11 @@ HTTP:
 ```
 POST /tokens
 Authorization: Bearer <admin-jwt>
-Body: { "agent_id": "uuid", "user": "uuid", "ttl_secs": 2592000 }
+Body: {
+  "agent_id": "uuid",
+  "user":     "uuid"?,     // optional
+  "ttl_secs": 2592000?     // optional, defaults to 30 days
+}
 
 Response: { "token": "eyJ...", "claims": { "sub": "...", ... } }
 ```
@@ -206,7 +209,8 @@ Response: { "token": "eyJ...", "claims": { "sub": "...", ... } }
 (no HTTP round-trip):
 
 ```rust
-let claims = Claims::agent(agent_id, user_id, ttl);
+let issuer = state.authenticator.issuer().to_string();
+let claims = Claims::agent(agent_id, Some(user_id), ttl_secs, issuer);
 let jwt = state.authenticator.mint(&claims)?;
 ```
 
@@ -346,27 +350,35 @@ method comes from a trait the operator implements:
 
 ```rust
 #[async_trait]
-pub trait BootProvider: Send + Sync {
-    async fn initialize(&self, claims: &Claims) -> Result<InitializeResponse, BootError>;
+pub trait BootProvider: Send + Sync + 'static {
+    async fn initialize(&self, claims: &Claims) -> Result<Value, BootError>;
 }
 
 #[async_trait]
-pub trait ToolHost: Send + Sync {
-    async fn list(&self, claims: &Claims) -> Result<ToolList, ToolError>;
-    async fn call(&self, claims: &Claims, req: ToolCall) -> Result<ToolResult, ToolError>;
+pub trait ToolHost: Send + Sync + 'static {
+    async fn list(&self, claims: &Claims) -> Result<Value, ToolError>;
+    async fn call(&self, claims: &Claims, req: Value) -> Result<Value, ToolError>;
 }
 
 #[async_trait]
-pub trait QuotaPolicy: Send + Sync {
+pub trait QuotaPolicy: Send + Sync + 'static {
     async fn check(&self, claims: &Claims) -> Result<bool, QuotaError>;
-    async fn record(&self, claims: &Claims, usage: Usage) -> Result<(), QuotaError>;
+    async fn record(&self, claims: &Claims, usage: Value) -> Result<(), QuotaError>;
 }
 
-pub trait Authenticator: Send + Sync {
+pub trait Authenticator: Send + Sync + 'static {
     fn validate(&self, token: &str) -> Result<Claims, AuthError>;
     fn mint(&self, claims: &Claims) -> Result<String, AuthError>;
+    fn issuer(&self) -> &str;
 }
 ```
+
+Hook payloads (`req`, `usage`, and the boot/tools/list responses)
+are intentionally typed as `serde_json::Value`. The broker is
+payload-agnostic — it routes JSON-RPC frames between the agent and
+the operator's hook impl without ever inspecting their contents.
+Operators with stronger typing needs are free to deserialize the
+`Value` into their own structs inside the impl.
 
 Default implementations: `BootProvider` returns an empty bootstrap
 (no system prompt, no history); `ToolHost` returns no tools;
@@ -388,9 +400,10 @@ crate's:
   and pointing them at the broker. Reference orchestrators may ship
   as separate examples or crates, but none of them are part of the
   broker core.
-- **Workspace sync.** Hydrating `/workspace` from object storage on
-  cold start. Agent-side concern; the protocol carries no workspace
-  messages.
+- **Workspace sync.** Hydrating the agent's working directory from
+  object storage on cold start. Agent-supervisor concern; the
+  broker never sees the descriptor. Design doc:
+  [`docs/design/workspace-sync.md`](./docs/design/workspace-sync.md).
 - **Channels.** Telegram, web chat, Slack, voice — built on top of
   the REST surface, not in the broker.
 - **Identity, billing, tier policy.** No JWT claim, no method, no

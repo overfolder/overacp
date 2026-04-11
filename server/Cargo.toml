@@ -23,15 +23,11 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 chrono = { workspace = true, features = ["serde"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-overacp-compute-core = { path = "../compute" }
 futures = "0.3"
-bytes = "1"
 futures-util = { workspace = true }
 dashmap = { workspace = true }
 jsonwebtoken = { workspace = true }
 dotenvy = { workspace = true }
-bcrypt = "0.15"
-base64 = "0.22"
 
 [lints]
 workspace = true
@@ -40,5 +36,4 @@ workspace = true
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-bcrypt = "0.15"
-base64 = "0.22"
+tokio-tungstenite = "0.24"
