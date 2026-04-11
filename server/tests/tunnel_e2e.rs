@@ -73,7 +73,7 @@ async fn recv_text(ws: &mut TestWs) -> Option<String> {
     let fut = async {
         while let Some(msg) = ws.next().await {
             match msg.ok()? {
-                Message::Text(t) => return Some(t),
+                Message::Text(t) => return Some(t.to_string()),
                 Message::Ping(_) | Message::Pong(_) => continue,
                 _ => return None,
             }
@@ -97,7 +97,7 @@ async fn tunnel_initialize_round_trip_against_live_server() {
 
     // Send `initialize`.
     ws.send(Message::Text(
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#.into(),
     ))
     .await
     .unwrap();
@@ -123,7 +123,7 @@ async fn tunnel_tools_list_and_quota_check_round_trips() {
     let mut ws = open_tunnel(addr, agent_id, &token).await;
 
     ws.send(Message::Text(
-        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.into(),
     ))
     .await
     .unwrap();
@@ -132,7 +132,7 @@ async fn tunnel_tools_list_and_quota_check_round_trips() {
     assert_eq!(parsed["result"]["tools"], json!([]));
 
     ws.send(Message::Text(
-        r#"{"jsonrpc":"2.0","id":2,"method":"quota/check"}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":2,"method":"quota/check"}"#.into(),
     ))
     .await
     .unwrap();
@@ -154,7 +154,7 @@ async fn tunnel_heartbeat_is_a_notification_and_gets_no_response() {
     let mut ws = open_tunnel(addr, agent_id, &token).await;
 
     ws.send(Message::Text(
-        r#"{"jsonrpc":"2.0","method":"heartbeat"}"#.to_string(),
+        r#"{"jsonrpc":"2.0","method":"heartbeat"}"#.into(),
     ))
     .await
     .unwrap();
@@ -162,7 +162,7 @@ async fn tunnel_heartbeat_is_a_notification_and_gets_no_response() {
     // Follow-up request to prove the connection survives the
     // notification with no reply.
     ws.send(Message::Text(
-        r#"{"jsonrpc":"2.0","id":1,"method":"quota/check"}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"quota/check"}"#.into(),
     ))
     .await
     .unwrap();
@@ -295,7 +295,7 @@ async fn turn_end_fans_out_to_sse_subscribers() {
     let mut ws = open_tunnel(addr, agent_id, &token).await;
 
     ws.send(Message::Text(
-        r#"{"jsonrpc":"2.0","method":"turn/end","params":{"messages":[]}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","method":"turn/end","params":{"messages":[]}}"#.into(),
     ))
     .await
     .unwrap();

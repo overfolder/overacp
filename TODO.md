@@ -43,16 +43,24 @@ Tracks concrete next steps. High-level roadmap lives in
 Tracked separately because the gaps surfaced after the protocol
 crate landed. All items block calling the loop "protocol-conformant".
 
-- [ ] Loop depends on `overacp-protocol` and consumes its method-name
+- [x] Loop depends on `overacp-protocol` and consumes its method-name
       constants instead of hard-coding strings in `loop/src/acp.rs`.
-- [ ] Loop's `Message` / `InitializeResult` types are replaced by the
-      ones in `overacp_protocol::messages`.
-- [ ] Loop reads the message body inline from the `session/message`
+- [x] Loop consumes `overacp_protocol::messages` payload types for
+      outbound notifications (`TextDelta`, `Activity`, `TurnEndParams`,
+      `QuotaUpdateRequest`) and for inbound `SessionMessageParams`.
+      *(Note: `llm::Message` stays local because it carries richer
+      tool-call typing the LLM client needs; the wire is bridged at
+      the `AcpClient::turn_end` boundary via a serde round-trip
+      into `protocol::Message`. `AcpClient::initialize` returns a
+      local `InitializeResult` struct that parses directly into the
+      LLM-facing shape rather than `protocol::InitializeResponse`,
+      because the LLM-facing `Message` is the consumer.)*
+- [x] Loop reads the message body inline from the `session/message`
       notification's `params` field instead of polling. The
       `poll/newMessages` method has been removed from the protocol.
-- [ ] Loop emits `turn/end` (fire-and-forget notification) at the
+- [x] Loop emits `turn/end` (fire-and-forget notification) at the
       end of each turn instead of the old `turn/save` request.
-- [ ] Loop emits `stream/toolCall` and `stream/toolResult`
+- [x] Loop emits `stream/toolCall` and `stream/toolResult`
       notifications around every tool invocation.
 - [ ] **Tool sources unified into one registry**, ordered:
       built-in → supervisor-injected → ACP-tunnelled → MCP-direct.
@@ -165,9 +173,10 @@ abstraction; Docker/Morph backends are operator territory.
 - [ ] `overacp-workspace-rclone` — wraps the rclone CLI.
 - [ ] `WorkspaceSyncRegistry` in the agent crate, dispatching from
       `OVERACP_WORKSPACE_SYNC` env var.
-- [ ] End-to-end demo: clone repo, `cargo run`, mint an admin JWT,
+- [x] End-to-end demo: clone repo, `cargo run`, mint an admin JWT,
       `POST /tokens` for an agent, `POST /agents/{id}/messages`,
-      observe the SSE stream.
+      observe the SSE stream. *(Landed as `scripts/smoke-e2e.sh` —
+      requires `LLM_API_KEY` in `.env`.)*
 
 ## 0.6 — `overacp-tools-mcp` + Overfolder cutover
 

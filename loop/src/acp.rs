@@ -1,11 +1,41 @@
+//! Thin JSON-RPC client that overloop speaks to its supervisor over
+//! stdio. The supervisor (`overacp-agent`) bridges these frames to
+//! the over/ACP broker's WebSocket tunnel.
+//!
+//! The wire vocabulary and payload shapes come from `overacp-protocol`
+//! so that overloop cannot drift from the broker.
+
 use anyhow::{Context, Result};
+use overacp_protocol::messages::{
+    Activity, Message as ProtoMessage, QuotaUpdateRequest, Role as ProtoRole, SessionMessageParams,
+    TextDelta, ToolCallNotification, ToolResultNotification, TurnEndParams, Usage as ProtoUsage,
+};
+use overacp_protocol::methods;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::io::{self, BufRead, BufReader, Read, Stdin, Stdout, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::llm::Message;
-use crate::traits::AcpService;
+use crate::llm::{Content, Message, Role, Usage};
+use crate::traits::{AcpService, NextPush};
+
+/// Shape of the `initialize` response, using the LLM-facing
+/// [`Message`] type so the outer loop can drop the history directly
+/// into its in-memory buffer without a second conversion.
+///
+/// The broker itself never inspects these fields — they are opaque
+/// pass-through from the operator's `BootProvider` hook. Fields are
+/// marked `#[serde(default)]` so a minimal boot response (empty
+/// object) still parses cleanly.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct InitializeResult {
+    #[serde(default)]
+    pub system_prompt: String,
+    #[serde(default)]
+    pub messages: Vec<Message>,
+    #[serde(default)]
+    pub tools_config: Value,
+}
 
 static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -17,7 +47,7 @@ fn next_id() -> u64 {
 struct JsonRpcRequest {
     jsonrpc: &'static str,
     id: u64,
-    method: String,
+    method: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     params: Option<Value>,
 }
@@ -41,17 +71,8 @@ struct JsonRpcError {
 #[allow(dead_code)]
 pub struct JsonRpcNotification {
     pub method: String,
-    pub params: Option<Value>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct InitializeResult {
-    pub system_prompt: String,
-    pub messages: Vec<Message>,
-    pub conversation_id: String,
     #[serde(default)]
-    pub tools_config: Value,
+    pub params: Value,
 }
 
 /// ACP client communicating over JSON-RPC on any Read/Write stream.
@@ -79,11 +100,11 @@ impl<R: Read, W: Write> AcpClient<R, W> {
         }
     }
 
-    fn send_request(&mut self, method: &str, params: Option<Value>) -> Result<Value> {
+    fn send_request(&mut self, method: &'static str, params: Option<Value>) -> Result<Value> {
         let req = JsonRpcRequest {
             jsonrpc: "2.0",
             id: next_id(),
-            method: method.to_string(),
+            method,
             params,
         };
 
@@ -108,8 +129,8 @@ impl<R: Read, W: Write> AcpClient<R, W> {
             .ok_or_else(|| anyhow::anyhow!("ACP response missing result"))
     }
 
-    fn send_notification(&mut self, method: &str, params: Option<Value>) -> Result<()> {
-        let notif = serde_json::json!({
+    fn send_notification(&mut self, method: &'static str, params: Option<Value>) -> Result<()> {
+        let notif = json!({
             "jsonrpc": "2.0",
             "method": method,
             "params": params,
@@ -123,104 +144,173 @@ impl<R: Read, W: Write> AcpClient<R, W> {
         Ok(())
     }
 
+    /// Call `initialize` once on cold start. The broker delegates to
+    /// `BootProvider::initialize`; the returned value is opaque JSON
+    /// and we parse it straight into the LLM-facing `Message` shape.
     pub fn initialize(&mut self) -> Result<InitializeResult> {
-        let result = self.send_request("initialize", None)?;
+        let result = self.send_request(methods::INITIALIZE, None)?;
         serde_json::from_value(result).context("parse initialize result")
     }
 
-    pub fn stream_text_delta(&mut self, text: &str) -> Result<()> {
+    fn recv_notification(&mut self) -> Result<JsonRpcNotification> {
+        let mut buf = String::new();
+        let n = self
+            .reader
+            .read_line(&mut buf)
+            .context("read notification")?;
+        if n == 0 {
+            anyhow::bail!("stdin closed while waiting for a notification");
+        }
+        serde_json::from_str(&buf).context("parse notification")
+    }
+}
+
+// ── AcpService impl ─────────────────────────────────────────────────
+
+impl<R: Read, W: Write> AcpService for AcpClient<R, W> {
+    fn stream_text_delta(&mut self, text: &str) -> Result<()> {
+        let params = TextDelta {
+            text: text.to_string(),
+        };
         self.send_notification(
-            "stream/textDelta",
-            Some(serde_json::json!({ "delta": text })),
+            methods::STREAM_TEXT_DELTA,
+            Some(serde_json::to_value(params)?),
         )
     }
 
-    pub fn stream_activity(&mut self, activity: &str) -> Result<()> {
+    fn stream_activity(&mut self, activity: &str) -> Result<()> {
+        // `stream/activity` carries a discriminator + opaque data per
+        // docs/design/protocol.md § 3.4. Wrap the legacy single-string
+        // form as a "log" kind.
+        let params = Activity {
+            kind: "log".to_string(),
+            data: Value::String(activity.to_string()),
+        };
         self.send_notification(
-            "stream/activity",
-            Some(serde_json::json!({ "activity": activity })),
+            methods::STREAM_ACTIVITY,
+            Some(serde_json::to_value(params)?),
         )
     }
 
-    pub fn turn_save(&mut self, messages: &[Message], usage: &Value) -> Result<()> {
-        self.send_request(
-            "turn/save",
-            Some(serde_json::json!({
-                "messages": messages,
-                "usage": usage,
-            })),
-        )?;
-        Ok(())
+    fn stream_tool_call(&mut self, id: &str, name: &str, arguments: &Value) -> Result<()> {
+        let params = ToolCallNotification {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.clone(),
+        };
+        self.send_notification(
+            methods::STREAM_TOOL_CALL,
+            Some(serde_json::to_value(params)?),
+        )
     }
 
-    pub fn quota_check(&mut self) -> Result<bool> {
-        let result = self.send_request("quota/check", None)?;
+    fn stream_tool_result(&mut self, id: &str, content: &Value, is_error: bool) -> Result<()> {
+        let params = ToolResultNotification {
+            id: id.to_string(),
+            content: content.clone(),
+            is_error,
+        };
+        self.send_notification(
+            methods::STREAM_TOOL_RESULT,
+            Some(serde_json::to_value(params)?),
+        )
+    }
+
+    fn turn_end(&mut self, messages: &[Message], usage: &Usage) -> Result<()> {
+        // Convert LLM-facing messages into the protocol's `Message`
+        // shape via serde round-trip. The two types serialize
+        // identically (same field names, `tool_calls` as Value on the
+        // protocol side absorbs the richer ToolCall typing); using
+        // the typed `TurnEndParams` here makes the broker's wire
+        // contract enforce the payload shape at compile time rather
+        // than at runtime when the broker rejects it.
+        let proto_messages: Vec<ProtoMessage> =
+            serde_json::from_value(serde_json::to_value(messages)?)
+                .context("convert llm::Message to protocol::Message for turn/end")?;
+        let params = TurnEndParams {
+            messages: proto_messages,
+            usage: ProtoUsage {
+                input_tokens: usage.prompt_tokens,
+                output_tokens: usage.completion_tokens,
+            },
+        };
+        self.send_notification(methods::TURN_END, Some(serde_json::to_value(params)?))
+    }
+
+    fn quota_check(&mut self) -> Result<bool> {
+        let result = self.send_request(methods::QUOTA_CHECK, None)?;
         Ok(result
             .get("allowed")
             .and_then(|v| v.as_bool())
             .unwrap_or(true))
     }
 
-    pub fn quota_update(&mut self, input_tokens: u64, output_tokens: u64) -> Result<()> {
-        self.send_request(
-            "quota/update",
-            Some(serde_json::json!({
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-            })),
-        )?;
+    fn quota_update(&mut self, input_tokens: u64, output_tokens: u64) -> Result<()> {
+        let params = QuotaUpdateRequest {
+            input_tokens,
+            output_tokens,
+        };
+        self.send_request(methods::QUOTA_UPDATE, Some(serde_json::to_value(params)?))?;
         Ok(())
     }
 
-    pub fn poll_new_messages(&mut self) -> Result<Vec<Message>> {
-        let result = self.send_request("poll/newMessages", None)?;
-        let messages: Vec<Message> = serde_json::from_value(result).unwrap_or_default();
-        Ok(messages)
-    }
-
-    pub fn heartbeat(&mut self) -> Result<()> {
-        self.send_notification("heartbeat", None)
-    }
-
-    pub fn recv_notification(&mut self) -> Result<JsonRpcNotification> {
-        let mut buf = String::new();
-        self.reader
-            .read_line(&mut buf)
-            .context("read notification")?;
-
-        serde_json::from_str(&buf).context("parse notification")
-    }
-}
-
-impl<R: Read, W: Write> AcpService for AcpClient<R, W> {
-    fn stream_text_delta(&mut self, text: &str) -> Result<()> {
-        self.stream_text_delta(text)
-    }
-
-    fn stream_activity(&mut self, activity: &str) -> Result<()> {
-        self.stream_activity(activity)
-    }
-
-    fn turn_save(&mut self, messages: &[Message], usage: &Value) -> Result<()> {
-        self.turn_save(messages, usage)
-    }
-
-    fn quota_check(&mut self) -> Result<bool> {
-        self.quota_check()
-    }
-
-    fn quota_update(&mut self, input_tokens: u64, output_tokens: u64) -> Result<()> {
-        self.quota_update(input_tokens, output_tokens)
-    }
-
-    fn poll_new_messages(&mut self) -> Result<Vec<Message>> {
-        self.poll_new_messages()
+    fn next_push(&mut self) -> Result<NextPush> {
+        loop {
+            let notif = self.recv_notification()?;
+            match notif.method.as_str() {
+                m if m == methods::SESSION_MESSAGE => {
+                    let params: SessionMessageParams = serde_json::from_value(notif.params)
+                        .context("parse session/message params")?;
+                    let msg = session_message_to_llm_message(params)?;
+                    return Ok(NextPush::Message(msg));
+                }
+                m if m == methods::SESSION_CANCEL => {
+                    return Ok(NextPush::Cancel);
+                }
+                other => {
+                    tracing::warn!(method = other, "ignoring unexpected tunnel notification");
+                }
+            }
+        }
     }
 
     fn heartbeat(&mut self) -> Result<()> {
-        self.heartbeat()
+        self.send_notification(methods::HEARTBEAT, None)
     }
 }
+
+/// Convert the typed `SessionMessageParams` from the protocol crate
+/// into the LLM-facing `Message` shape the agentic loop operates on.
+///
+/// `content` is opaque on the wire (the broker never inspects it),
+/// so we accept both a bare string (`Content::Text`) and a structured
+/// list of content blocks (`Content::Blocks`).
+fn session_message_to_llm_message(params: SessionMessageParams) -> Result<Message> {
+    let role = match params.role {
+        ProtoRole::System => Role::System,
+        ProtoRole::User => Role::User,
+        ProtoRole::Assistant => Role::Assistant,
+        ProtoRole::Tool => Role::Tool,
+    };
+
+    let content = match params.content {
+        Value::Null => None,
+        Value::String(s) => Some(Content::Text(s)),
+        other @ (Value::Array(_) | Value::Object(_)) => {
+            Some(serde_json::from_value(other).context("parse session/message content blocks")?)
+        }
+        other => Some(Content::Text(other.to_string())),
+    };
+
+    Ok(Message {
+        role,
+        content,
+        tool_calls: None,
+        tool_call_id: None,
+    })
+}
+
+// ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -235,122 +325,222 @@ mod tests {
     }
 
     fn jsonrpc_result(id: u64, result: Value) -> String {
+        format!("{}\n", json!({"jsonrpc":"2.0","id":id,"result":result}))
+    }
+
+    fn notification(method: &str, params: Value) -> String {
         format!(
             "{}\n",
-            serde_json::json!({"jsonrpc":"2.0","id":id,"result":result})
+            json!({"jsonrpc":"2.0","method":method,"params":params})
         )
     }
 
     #[test]
-    fn test_stream_text_delta() {
+    fn stream_text_delta_wraps_text() {
         let mut acp = mock_acp("");
         acp.stream_text_delta("hello").unwrap();
 
         let out = String::from_utf8(acp.writer.clone()).unwrap();
         let parsed: Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(parsed["method"], "stream/textDelta");
-        assert_eq!(parsed["params"]["delta"], "hello");
+        assert_eq!(parsed["params"]["text"], "hello");
     }
 
     #[test]
-    fn test_stream_activity() {
+    fn stream_activity_wraps_as_log_kind() {
         let mut acp = mock_acp("");
         acp.stream_activity("working").unwrap();
 
         let out = String::from_utf8(acp.writer.clone()).unwrap();
         let parsed: Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(parsed["method"], "stream/activity");
-        assert_eq!(parsed["params"]["activity"], "working");
+        assert_eq!(parsed["params"]["kind"], "log");
+        assert_eq!(parsed["params"]["data"], "working");
     }
 
     #[test]
-    fn test_heartbeat() {
+    fn heartbeat_is_notification() {
         let mut acp = mock_acp("");
         acp.heartbeat().unwrap();
 
         let out = String::from_utf8(acp.writer.clone()).unwrap();
         let parsed: Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(parsed["method"], "heartbeat");
+        assert!(parsed.get("id").is_none() || parsed["id"].is_null());
     }
 
     #[test]
-    fn test_quota_check_allowed() {
-        let input = jsonrpc_result(1, serde_json::json!({"allowed": true}));
+    fn quota_check_returns_allowed_flag() {
+        let input = jsonrpc_result(1, json!({"allowed": true}));
         let mut acp = mock_acp(&input);
         assert!(acp.quota_check().unwrap());
     }
 
     #[test]
-    fn test_quota_check_denied() {
-        let input = jsonrpc_result(1, serde_json::json!({"allowed": false}));
+    fn quota_check_defaults_to_allowed_on_missing_field() {
+        let input = jsonrpc_result(1, json!({}));
+        let mut acp = mock_acp(&input);
+        assert!(acp.quota_check().unwrap());
+    }
+
+    #[test]
+    fn quota_check_denied_surfaces_false() {
+        let input = jsonrpc_result(1, json!({"allowed": false}));
         let mut acp = mock_acp(&input);
         assert!(!acp.quota_check().unwrap());
     }
 
     #[test]
-    fn test_poll_new_messages_empty() {
-        let input = jsonrpc_result(1, serde_json::json!([]));
-        let mut acp = mock_acp(&input);
-        let msgs = acp.poll_new_messages().unwrap();
-        assert!(msgs.is_empty());
-    }
-
-    #[test]
-    fn test_initialize() {
-        let init_result = serde_json::json!({
+    fn initialize_parses_broker_response_shape() {
+        let init_result = json!({
             "system_prompt": "You are helpful.",
             "messages": [],
-            "conversation_id": "conv-123"
+            "tools_config": {}
         });
         let input = jsonrpc_result(1, init_result);
         let mut acp = mock_acp(&input);
         let result = acp.initialize().unwrap();
         assert_eq!(result.system_prompt, "You are helpful.");
-        assert_eq!(result.conversation_id, "conv-123");
+        assert!(result.messages.is_empty());
     }
 
     #[test]
-    fn test_recv_notification() {
-        let notif = format!(
-            "{}\n",
-            serde_json::json!({"jsonrpc":"2.0","method":"session/message","params":{}})
+    fn initialize_tolerates_missing_optional_fields() {
+        let input = jsonrpc_result(1, json!({}));
+        let mut acp = mock_acp(&input);
+        let result = acp.initialize().unwrap();
+        assert!(result.system_prompt.is_empty());
+        assert!(result.messages.is_empty());
+    }
+
+    #[test]
+    fn next_push_surfaces_session_message_as_user_message() {
+        let input = notification("session/message", json!({"role": "user", "content": "hi"}));
+        let mut acp = mock_acp(&input);
+        match acp.next_push().unwrap() {
+            NextPush::Message(m) => {
+                assert_eq!(m.role, Role::User);
+                assert_eq!(m.content.as_ref().and_then(|c| c.as_text()), Some("hi"));
+            }
+            NextPush::Cancel => panic!("expected Message, got Cancel"),
+        }
+    }
+
+    #[test]
+    fn next_push_surfaces_session_cancel_as_cancel_sentinel() {
+        let input = notification("session/cancel", json!({}));
+        let mut acp = mock_acp(&input);
+        assert!(matches!(acp.next_push().unwrap(), NextPush::Cancel));
+    }
+
+    #[test]
+    fn next_push_parses_content_blocks() {
+        let input = notification(
+            "session/message",
+            json!({
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "what's this?" },
+                    { "type": "image_url", "image_url": { "url": "https://x/y.png" } }
+                ]
+            }),
         );
-        let mut acp = mock_acp(&notif);
-        let n = acp.recv_notification().unwrap();
-        assert_eq!(n.method, "session/message");
+        let mut acp = mock_acp(&input);
+        let msg = match acp.next_push().unwrap() {
+            NextPush::Message(m) => m,
+            NextPush::Cancel => panic!("expected Message"),
+        };
+        assert_eq!(msg.role, Role::User);
+        match msg.content.as_ref().expect("content") {
+            Content::Blocks(blocks) => assert_eq!(blocks.len(), 2),
+            Content::Text(_) => panic!("expected Blocks"),
+        }
     }
 
     #[test]
-    fn test_send_request_error() {
+    fn next_push_skips_unknown_notifications_and_continues() {
         let input = format!(
-            "{}\n",
-            serde_json::json!({"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"bad"}})
+            "{}{}",
+            notification("stream/unknown", json!({})),
+            notification("session/message", json!({"role": "user", "content": "ok"})),
         );
         let mut acp = mock_acp(&input);
-        let err = acp.quota_check().unwrap_err();
-        assert!(err.to_string().contains("bad"));
+        match acp.next_push().unwrap() {
+            NextPush::Message(m) => {
+                assert_eq!(m.content.as_ref().and_then(|c| c.as_text()), Some("ok"));
+            }
+            NextPush::Cancel => panic!("expected Message"),
+        }
     }
 
     #[test]
-    fn test_turn_save() {
-        let input = jsonrpc_result(1, serde_json::json!({}));
+    fn next_push_rejects_unknown_role() {
+        // An unknown role is caught at the `SessionMessageParams`
+        // deserialization boundary by the protocol crate's typed
+        // `Role` enum, so we just assert the call fails.
+        let input = notification("session/message", json!({"role": "alien", "content": "hi"}));
         let mut acp = mock_acp(&input);
-        acp.turn_save(&[], &serde_json::json!({})).unwrap();
+        let err = acp.next_push().unwrap_err();
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("session/message") || msg.contains("variant"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn next_push_errors_on_eof() {
+        let mut acp = mock_acp("");
+        let err = acp.next_push().unwrap_err();
+        assert!(err.to_string().contains("stdin closed"));
+    }
+
+    #[test]
+    fn turn_end_wraps_messages_and_maps_usage_field_names() {
+        let mut acp = mock_acp("");
+        let messages = vec![Message {
+            role: Role::Assistant,
+            content: Some(Content::Text("done".into())),
+            tool_calls: None,
+            tool_call_id: None,
+        }];
+        let usage = Usage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+        };
+        acp.turn_end(&messages, &usage).unwrap();
 
         let out = String::from_utf8(acp.writer.clone()).unwrap();
         let parsed: Value = serde_json::from_str(out.trim()).unwrap();
-        assert_eq!(parsed["method"], "turn/save");
+        assert_eq!(parsed["method"], "turn/end");
+        assert!(parsed.get("id").is_none() || parsed["id"].is_null());
+        assert_eq!(parsed["params"]["usage"]["input_tokens"], 100);
+        assert_eq!(parsed["params"]["usage"]["output_tokens"], 50);
+        assert_eq!(parsed["params"]["messages"][0]["role"], "assistant");
     }
 
     #[test]
-    fn test_quota_update() {
-        let input = jsonrpc_result(1, serde_json::json!({}));
+    fn quota_update_sends_request_with_tokens() {
+        let input = jsonrpc_result(1, json!({}));
         let mut acp = mock_acp(&input);
         acp.quota_update(100, 50).unwrap();
 
         let out = String::from_utf8(acp.writer.clone()).unwrap();
         let parsed: Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(parsed["method"], "quota/update");
         assert_eq!(parsed["params"]["input_tokens"], 100);
         assert_eq!(parsed["params"]["output_tokens"], 50);
+    }
+
+    #[test]
+    fn send_request_surfaces_error_from_peer() {
+        let input = format!(
+            "{}\n",
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"bad"}})
+        );
+        let mut acp = mock_acp(&input);
+        let err = acp.quota_check().unwrap_err();
+        assert!(err.to_string().contains("bad"));
     }
 }

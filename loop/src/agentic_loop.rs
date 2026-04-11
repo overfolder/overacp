@@ -82,13 +82,6 @@ pub async fn run(
             silent_turns = 0;
         }
 
-        // Poll for new user messages
-        if let Ok(new_msgs) = acp.poll_new_messages() {
-            if !new_msgs.is_empty() {
-                messages.extend(new_msgs);
-            }
-        }
-
         // Inject loop status
         let status = format!(
             "[iteration {}/{}, elapsed {:?}]",
@@ -149,14 +142,23 @@ pub async fn run(
                 let args: Value =
                     serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
 
+                // Human-readable activity log — kept for back-compat
+                // with consumers that only watch stream/activity.
                 let _ = acp.stream_activity(&format!("Running tool: {}", name));
+
+                // Machine-readable observability: stream/toolCall
+                // fires BEFORE the invocation, stream/toolResult
+                // fires AFTER, both echoing the same tool-call id.
+                let _ = acp.stream_tool_call(&tc.id, name, &args);
 
                 let result = registry.execute(name, args).await;
 
-                let (content, _is_error) = match result {
+                let (content, is_error) = match result {
                     Ok(output) => (output, false),
                     Err(err) => (format!("Error: {}", err), true),
                 };
+
+                let _ = acp.stream_tool_result(&tc.id, &Value::String(content.clone()), is_error);
 
                 messages.push(Message {
                     role: Role::Tool,
@@ -191,10 +193,11 @@ pub async fn run(
         }
     }
 
-    // Save turn
-    let usage_value = serde_json::to_value(&total_usage)?;
-    if let Err(e) = acp.turn_save(messages, &usage_value) {
-        error!("Failed to save turn: {}", e);
+    // Emit the fire-and-forget turn/end notification. The broker
+    // fans it out to SSE subscribers; the operator's backend is
+    // responsible for persisting the data.
+    if let Err(e) = acp.turn_end(messages, &total_usage) {
+        error!("Failed to emit turn/end: {}", e);
     }
 
     Ok(())

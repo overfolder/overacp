@@ -21,7 +21,10 @@ identity. Those are jobs for whichever system wraps it.
 ## What over/ACP does
 
 - **Terminates agent tunnels.** One WebSocket per agent, JSON-RPC 2.0
-  on the wire, JWT bearer auth on upgrade.
+  on the wire, JWT bearer auth on upgrade. The `overacp-agent`
+  supervisor running on the untrusted side mirrors this
+  payload-agnostic posture: it shuttles JSON-RPC text frames between
+  the WebSocket and its child's stdio without inspecting them.
 - **Routes user messages to agents.** `POST /agents/{id}/messages`
   pushes a message frame down the agent's tunnel as a `session/message`
   notification. Body travels in the notification — no poll round-trip.
@@ -54,7 +57,7 @@ identity. Those are jobs for whichever system wraps it.
 - **No compute provisioning.** over/ACP does not start, stop, scale,
   or schedule the environments where agents run. An external
   orchestrator launches compute and points the agent at the broker
-  via `OVERACP_TUNNEL_URL` and `OVERACP_JWT`.
+  via `OVERACP_SERVER_URL` and `OVERACP_TOKEN`.
 - **No agent enrollment API.** Connecting with a valid agent JWT
   *is* the enrollment. There is no `POST /agents`.
 - **No identity hierarchy.** No tier, plan, or entitlement claim in
@@ -74,15 +77,20 @@ identity. Those are jobs for whichever system wraps it.
 
 | Crate | What |
 |---|---|
-| `overacp-protocol` | Pure wire types, method-name constants, JWT claim helpers. No I/O, no tokio. |
+| `overacp-protocol` | Pure wire types, method-name constants, JWT claim helpers. No I/O, no tokio. The authoritative wire seam: `overacp-server`, `overacp-agent`, and `overloop` all consume it (or are in the process of being migrated to consume it), so any new method or payload shape must land here first to prevent drift. Inline `serde_json::Value` JSON-RPC construction is allowed only at the payload-agnostic hook boundary inside the broker (see § The four hooks). |
 | `overacp-agent` | Supervisor that holds the WebSocket and bridges JSON-RPC to a child process's stdio. `AgentAdapter` trait so the supervised child can be any ACP-speaking harness. |
 | `overacp-server` | The broker. Stateless tunnel terminator + REST adapters + the four pluggable hooks (`BootProvider`, `ToolHost`, `QuotaPolicy`, `Authenticator`). |
-| **`overloop`** | Reference child agent: minimal agentic loop with built-in tools and an OpenAI-compatible LLM client. Speaks the protocol on stdio. |
+| **`overloop`** | Reference child agent: minimal agentic loop with built-in tools and an OpenAI-compatible LLM client. Speaks the protocol on stdio. **An OpenAI-compatible LLM endpoint and API key are required to run `overloop`** — there is no echo/stub mode. Smoke scripts and human demos must supply `LLM_API_KEY` (typically via `.env`); the hermetic CI path uses an in-process mock LLM server in the `overacp-agent` integration tests, not a mode in `overloop` itself. |
 
 Compute providers, workspace-sync backends, MCP `ToolHost`
 implementations, and storage adapters live **outside** these four
 crates — either as separate crates the operator pulls in, or in the
 operator's own codebase.
+
+The wire protocol is expressed in Rust types in `overacp-protocol`,
+and in prose in [`docs/design/protocol.md`](./docs/design/protocol.md).
+Those two must agree. When a wire change crosses the tunnel, land
+the Rust type and the design-doc update in the same commit.
 
 ## Architecture
 
@@ -113,13 +121,18 @@ operator's own codebase.
 │   ┌────────────────────────▼─────────────────────────────────┐      │
 │   │  Compute environment (VM, container, laptop, ...)        │      │
 │   │  ── launched by external orchestrator                    │      │
-│   │  ── only knows OVERACP_TUNNEL_URL + OVERACP_JWT          │      │
+│   │  ── only knows OVERACP_SERVER_URL + OVERACP_TOKEN        │      │
 │   │  ── no DB credentials, no operator secrets               │      │
 │   │                                                          │      │
 │   │  ┌────────────────────────────────────────────────────┐ │      │
 │   │  │  overacp-agent (supervisor)                        │ │      │
 │   │  │  ── opens the WebSocket, reconnects on drop        │ │      │
 │   │  │  ── bridges WS frames ↔ child stdio                │ │      │
+│   │  │  ── content-agnostic: JSON-RPC frames are          │ │      │
+│   │  │     forwarded one-line-per-frame without parsing;  │ │      │
+│   │  │     the OS pipe between supervisor and child is    │ │      │
+│   │  │     the natural buffer for mid-turn pushes, so     │ │      │
+│   │  │     the supervisor keeps no in-memory queue.       │ │      │
 │   │  └─────────────────────┬──────────────────────────────┘ │      │
 │   │                        │                                │      │
 │   │  ┌─────────────────────▼──────────────────────────────┐ │      │
@@ -285,9 +298,11 @@ access; the agent VM only sees the serialized result.
 The agent holds the returned messages in memory and accumulates
 new messages across turns. It does not call `initialize` again
 unless the process restarts (cold start). "Resume by agent_id"
-is implicit: cold-start the agent with the same `OVERACP_AGENT_ID`,
-and the `BootProvider` hook looks up the conversation history in the
-operator's database using `claims.sub`.
+is implicit: cold-start the agent with a JWT whose `sub` matches
+the original `agent_id` (the supervisor decodes `sub` from
+`OVERACP_TOKEN` to build the tunnel URL), and the `BootProvider`
+hook looks up the conversation history in the operator's database
+using `claims.sub`.
 
 ### `session/message` — push delivery
 

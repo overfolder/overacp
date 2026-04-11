@@ -5,11 +5,29 @@ use overloop::llm::{
     Usage,
 };
 use overloop::tools::ToolRegistry;
-use overloop::traits::{AcpService, LlmService, StreamedResponse};
+use overloop::traits::{AcpService, LlmService, NextPush, StreamedResponse};
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Duration;
+
+/// Captured `stream/toolCall` frame.
+#[derive(Debug, Clone)]
+struct ToolCallFrame {
+    id: String,
+    name: String,
+    #[allow(dead_code)]
+    arguments: Value,
+}
+
+/// Captured `stream/toolResult` frame.
+#[derive(Debug, Clone)]
+struct ToolResultFrame {
+    id: String,
+    #[allow(dead_code)]
+    content: Value,
+    is_error: bool,
+}
 
 // ─── Mock LLM ────────────────────────────────────────────────────
 
@@ -59,8 +77,12 @@ impl LlmService for MockLlm {
 struct MockAcp {
     text_deltas: Vec<String>,
     activities: Vec<String>,
+    tool_calls_streamed: Vec<ToolCallFrame>,
+    tool_results_streamed: Vec<ToolResultFrame>,
     quota_allowed: bool,
-    turn_saved: bool,
+    turn_ended: bool,
+    turn_end_usage: Option<Usage>,
+    inbox: VecDeque<NextPush>,
 }
 
 impl MockAcp {
@@ -68,8 +90,12 @@ impl MockAcp {
         Self {
             text_deltas: Vec::new(),
             activities: Vec::new(),
+            tool_calls_streamed: Vec::new(),
+            tool_results_streamed: Vec::new(),
             quota_allowed,
-            turn_saved: false,
+            turn_ended: false,
+            turn_end_usage: None,
+            inbox: VecDeque::new(),
         }
     }
 }
@@ -85,8 +111,27 @@ impl AcpService for MockAcp {
         Ok(())
     }
 
-    fn turn_save(&mut self, _messages: &[Message], _usage: &Value) -> Result<()> {
-        self.turn_saved = true;
+    fn stream_tool_call(&mut self, id: &str, name: &str, arguments: &Value) -> Result<()> {
+        self.tool_calls_streamed.push(ToolCallFrame {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.clone(),
+        });
+        Ok(())
+    }
+
+    fn stream_tool_result(&mut self, id: &str, content: &Value, is_error: bool) -> Result<()> {
+        self.tool_results_streamed.push(ToolResultFrame {
+            id: id.to_string(),
+            content: content.clone(),
+            is_error,
+        });
+        Ok(())
+    }
+
+    fn turn_end(&mut self, _messages: &[Message], usage: &Usage) -> Result<()> {
+        self.turn_ended = true;
+        self.turn_end_usage = Some(usage.clone());
         Ok(())
     }
 
@@ -98,8 +143,10 @@ impl AcpService for MockAcp {
         Ok(())
     }
 
-    fn poll_new_messages(&mut self) -> Result<Vec<Message>> {
-        Ok(vec![])
+    fn next_push(&mut self) -> Result<NextPush> {
+        self.inbox
+            .pop_front()
+            .ok_or_else(|| anyhow::anyhow!("mock inbox empty"))
     }
 
     fn heartbeat(&mut self) -> Result<()> {
@@ -185,7 +232,8 @@ async fn test_simple_text_response() {
     .await
     .unwrap();
 
-    assert!(acp.turn_saved);
+    assert!(acp.turn_ended);
+    assert!(acp.turn_end_usage.is_some());
     assert!(
         acp.text_deltas.iter().any(|d| d.contains("Hello!")),
         "Expected 'Hello!' in text_deltas: {:?}",
@@ -220,6 +268,15 @@ async fn test_tool_call_round_trip() {
         acp.activities
     );
 
+    // Machine-readable observability: stream/toolCall + stream/toolResult
+    // should each have fired exactly once, with matching ids.
+    assert_eq!(acp.tool_calls_streamed.len(), 1);
+    assert_eq!(acp.tool_results_streamed.len(), 1);
+    assert_eq!(acp.tool_calls_streamed[0].name, "exec");
+    assert_eq!(acp.tool_calls_streamed[0].id, "call_001");
+    assert_eq!(acp.tool_results_streamed[0].id, "call_001");
+    assert!(!acp.tool_results_streamed[0].is_error);
+
     // Verify two LLM calls were made (tool call + final text)
     assert!(llm.responses.lock().unwrap().is_empty());
 
@@ -228,6 +285,40 @@ async fn test_tool_call_round_trip() {
     assert_eq!(tool_msgs.len(), 1);
     let tool_output = tool_msgs[0].content.as_ref().unwrap().as_text().unwrap();
     assert!(tool_output.contains("hi"), "Tool output: {}", tool_output);
+}
+
+#[tokio::test]
+async fn test_tool_call_failure_streams_is_error_true() {
+    // `_unknown_tool_` is not registered → ToolRegistry::execute errors
+    // → stream_tool_result should fire with is_error = true.
+    let llm = MockLlm::new(vec![
+        make_tool_call_response("_unknown_tool_", r#"{}"#),
+        make_text_response("sorry", StopReason::Stop),
+    ]);
+    let mut acp = MockAcp::new(true);
+    let mut registry = ToolRegistry::new();
+    let mut messages = vec![user_msg("call the unknown tool")];
+
+    run(
+        &mut acp,
+        &llm,
+        &mut registry,
+        &mut messages,
+        &default_config(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(acp.tool_calls_streamed.len(), 1);
+    assert_eq!(acp.tool_results_streamed.len(), 1);
+    assert!(
+        acp.tool_results_streamed[0].is_error,
+        "tool_result.is_error should be true on failure"
+    );
+    assert_eq!(
+        acp.tool_calls_streamed[0].id, acp.tool_results_streamed[0].id,
+        "call and result ids must match"
+    );
 }
 
 #[tokio::test]
@@ -328,5 +419,128 @@ async fn test_content_length_stop() {
             .any(|d| d.contains("[Response truncated")),
         "Expected truncation message: {:?}",
         acp.text_deltas
+    );
+}
+
+#[tokio::test]
+async fn test_content_filter_stop() {
+    let llm = MockLlm::new(vec![make_text_response("sorry", StopReason::ContentFilter)]);
+    let mut acp = MockAcp::new(true);
+    let mut registry = ToolRegistry::new();
+    let mut messages = vec![user_msg("Hi")];
+
+    run(
+        &mut acp,
+        &llm,
+        &mut registry,
+        &mut messages,
+        &default_config(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        acp.text_deltas
+            .iter()
+            .any(|d| d.contains("[Content filtered]")),
+        "Expected content-filter message: {:?}",
+        acp.text_deltas
+    );
+}
+
+#[tokio::test]
+async fn test_wind_down_injects_system_message_when_iterations_remaining_equals_5() {
+    // Config with max_iterations = 5 means the FIRST iteration has
+    // `remaining == 5`, so the wind-down branch fires immediately.
+    // The loop then runs the LLM call and the natural-stop branch
+    // exits after one turn, leaving the wind-down system message
+    // in `messages`.
+    let llm = MockLlm::new(vec![make_text_response("ok", StopReason::Stop)]);
+    let mut acp = MockAcp::new(true);
+    let mut registry = ToolRegistry::new();
+    let mut messages = vec![user_msg("hi")];
+
+    let config = LoopConfig {
+        max_iterations: 5,
+        timeout: Duration::from_secs(30),
+    };
+
+    run(&mut acp, &llm, &mut registry, &mut messages, &config)
+        .await
+        .unwrap();
+
+    let wind_down = messages.iter().any(|m| {
+        m.role == Role::System
+            && m.content
+                .as_ref()
+                .and_then(|c| c.as_text())
+                .map(|t| t.contains("iterations remaining"))
+                .unwrap_or(false)
+    });
+    assert!(
+        wind_down,
+        "wind-down system message not injected; messages = {messages:#?}"
+    );
+}
+
+#[tokio::test]
+async fn test_silence_nudge_injected_after_three_silent_turns() {
+    // Three empty-text, no-tool responses in a row trip `silent_turns
+    // >= 3`; the 4th iteration injects the nudge. Add a final real
+    // response so the loop terminates.
+    fn empty_assistant_response() -> Result<StreamedResponse> {
+        Ok(StreamedResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            // Emit finish_reason = ToolCalls so the loop `continue`s
+            // past the stop-reason match without breaking, letting
+            // `silent_turns` accumulate across iterations.
+            finish_reason: Some(StopReason::ToolCalls),
+            usage: Some(Usage {
+                prompt_tokens: 1,
+                completion_tokens: 0,
+                total_tokens: 1,
+            }),
+        })
+    }
+
+    let llm = MockLlm::new(vec![
+        empty_assistant_response(),
+        empty_assistant_response(),
+        empty_assistant_response(),
+        // 4th iteration: after silence_nudge triggers and resets,
+        // emit a real text response to let the loop exit cleanly.
+        make_text_response("done", StopReason::Stop),
+    ]);
+    let mut acp = MockAcp::new(true);
+    let mut registry = ToolRegistry::new();
+    let mut messages = vec![user_msg("go")];
+
+    run(
+        &mut acp,
+        &llm,
+        &mut registry,
+        &mut messages,
+        &default_config(),
+    )
+    .await
+    .unwrap();
+
+    // The nudge is a System message with the SILENCE_NUDGE text.
+    let nudge = messages.iter().any(|m| {
+        m.role == Role::System
+            && m.content
+                .as_ref()
+                .and_then(|c| c.as_text())
+                .map(|t| t.contains("haven't produced any output"))
+                .unwrap_or(false)
+    });
+    assert!(
+        nudge,
+        "silence nudge not injected; messages = {messages:#?}"
     );
 }
