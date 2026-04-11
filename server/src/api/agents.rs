@@ -343,6 +343,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_message_request_honours_default_role() {
+        // If the incoming JSON body omits `role`, the serde default
+        // (`"user"`) is used. This covers the `default_role` helper.
+        let body: SendMessageRequest =
+            serde_json::from_value(json!({ "content": "no-role" })).unwrap();
+        assert_eq!(body.role, "user");
+        assert_eq!(body.content, json!("no-role"));
+    }
+
+    #[tokio::test]
+    async fn send_message_reconnect_race_plus_queue_full_returns_503() {
+        // Reconnect race AND the fallback queue is already at
+        // capacity: the recovered frame from the SendError has
+        // nowhere to go, so the handler surfaces 503.
+        let state = state_with_queue_capacity(1);
+        let agent_id = Uuid::new_v4();
+
+        // Pre-fill the per-agent queue to capacity directly.
+        state
+            .message_queue
+            .push(agent_id, "already-buffered".to_string())
+            .unwrap();
+
+        // Register a fake entry and immediately drop its receiver
+        // so `tx.send` fails.
+        let rx = register_fake(&state, agent_id);
+        drop(rx);
+
+        let err = send_message(
+            State(state.clone()),
+            Path(agent_id),
+            Json(SendMessageRequest {
+                role: "user".into(),
+                content: json!("late"),
+            }),
+        )
+        .await
+        .expect_err("double-failure");
+        assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+
+        // The queue still holds exactly one frame (the pre-seed).
+        assert_eq!(state.message_queue.len(agent_id), 1);
+    }
+
+    #[tokio::test]
     async fn send_message_falls_back_to_queue_when_receiver_dropped() {
         // Reconnect race: the registry still has a live `AgentEntry`
         // (because `run_tunnel` hasn't finished its teardown) but
@@ -533,5 +578,42 @@ mod tests {
         let _sse = stream_events(State(state), Path(Uuid::new_v4()))
             .await
             .expect("sse handle");
+    }
+
+    #[tokio::test]
+    async fn stream_handler_forwards_broadcast_frames() {
+        // Subscribe via the handler and drive a frame through the
+        // underlying broadcast channel. The `Stream::unfold` body
+        // inside `stream_events` pumps the frame out as an SSE
+        // event.
+        use axum::response::IntoResponse as _;
+        use http_body_util::BodyExt as _;
+
+        let state = fresh_state();
+        let agent_id = Uuid::new_v4();
+
+        // Warm up the broker channel before the handler subscribes,
+        // so the stream_events call finds a sender already.
+        let sender = state.stream_broker.sender_for(agent_id);
+
+        let sse = stream_events(State(state), Path(agent_id))
+            .await
+            .expect("sse handle");
+
+        sender
+            .send(r#"{"jsonrpc":"2.0","method":"stream/textDelta","params":{}}"#.to_string())
+            .expect("send to broker");
+
+        let resp = sse.into_response();
+        let mut body = resp.into_body();
+        let frame = body
+            .frame()
+            .await
+            .expect("at least one frame")
+            .expect("body frame ok");
+        use std::str::from_utf8;
+        let data = frame.into_data().unwrap_or_else(|_| Default::default());
+        let as_str = from_utf8(&data).expect("utf8");
+        assert!(as_str.contains("stream/textDelta"), "data = {as_str}");
     }
 }

@@ -358,4 +358,30 @@ mod tests {
     fn path_agent_id_returns_none_for_non_uuid() {
         assert_eq!(path_agent_id("/agents/not-a-uuid/messages"), None);
     }
+
+    // ── TunnelAuthRejection::into_response matrix ──
+
+    #[test]
+    fn rejection_missing_token_into_response_is_401() {
+        let resp = TunnelAuthRejection::MissingToken.into_response();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn rejection_invalid_token_into_response_is_401() {
+        let resp = TunnelAuthRejection::InvalidToken.into_response();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn rejection_wrong_role_into_response_is_403() {
+        let resp = TunnelAuthRejection::WrongRole.into_response();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn rejection_agent_mismatch_into_response_is_403() {
+        let resp = TunnelAuthRejection::AgentMismatch.into_response();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
 }

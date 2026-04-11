@@ -585,3 +585,32 @@ async fn missing_bearer_is_401() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn missing_bearer_on_agent_scoped_route_is_401() {
+    // The agent-scoped routes go through the other middleware
+    // (`require_agent_or_admin`); verify its missing-token branch
+    // too.
+    let (state, _) = fresh_state();
+    let app = router(state);
+    let res = app
+        .oneshot(empty_get(&format!("/agents/{}/stream", Uuid::new_v4())))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn malformed_bearer_on_agent_scoped_route_is_401() {
+    let (state, _) = fresh_state();
+    let app = router(state);
+    let req = Request::builder()
+        .uri(format!("/agents/{}/messages", Uuid::new_v4()))
+        .method(Method::POST)
+        .header("authorization", "Bearer not-a-jwt")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}

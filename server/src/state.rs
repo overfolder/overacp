@@ -139,8 +139,19 @@ mod tests {
 
         let tools = state.tool_host.list(&claims).await.unwrap();
         assert_eq!(tools["tools"][0]["name"], "stub");
+        let call_result = state
+            .tool_host
+            .call(&claims, json!({ "name": "stub" }))
+            .await
+            .unwrap();
+        assert_eq!(call_result["ok"], true);
 
         let allowed = state.quota_policy.check(&claims).await.unwrap();
         assert!(!allowed, "stub quota should refuse");
+        state
+            .quota_policy
+            .record(&claims, json!({}))
+            .await
+            .unwrap();
     }
 }

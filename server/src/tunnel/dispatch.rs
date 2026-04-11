@@ -474,6 +474,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn flaky_tools_list_returns_the_stub_entry() {
+        // The list side of the FlakyTools mock exposes a single
+        // stub tool named "fail"; the call side (tested above)
+        // returns an Execution error.
+        let ctx = ctx_with(
+            Arc::new(DefaultBootProvider),
+            Arc::new(FlakyTools),
+            Arc::new(DefaultQuotaPolicy),
+        );
+        let resp = handle_message(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(parse(&resp)["result"]["tools"][0]["name"], "fail");
+    }
+
+    #[tokio::test]
+    async fn forbidden_tools_list_returns_empty() {
+        let ctx = ctx_with(
+            Arc::new(DefaultBootProvider),
+            Arc::new(ForbiddenTools),
+            Arc::new(DefaultQuotaPolicy),
+        );
+        let resp = handle_message(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(parse(&resp)["result"]["tools"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn broken_tools_call_internal_error_maps_to_1500() {
+        let ctx = ctx_with(
+            Arc::new(DefaultBootProvider),
+            Arc::new(BrokenTools),
+            Arc::new(DefaultQuotaPolicy),
+        );
+        let resp = handle_message(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x"}}"#,
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(parse(&resp)["error"]["code"], 1500);
+    }
+
+    #[tokio::test]
     async fn quota_check_can_refuse() {
         let ctx = ctx_with(
             Arc::new(DefaultBootProvider),

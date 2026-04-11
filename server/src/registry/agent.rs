@@ -251,6 +251,15 @@ mod tests {
     }
 
     #[test]
+    fn default_matches_new() {
+        // `AgentRegistry::default()` should produce an empty
+        // registry equivalent to `::new()`.
+        let reg: AgentRegistry = Default::default();
+        assert!(reg.list().is_empty());
+        assert!(!reg.is_connected(Uuid::new_v4()));
+    }
+
+    #[test]
     fn unregister_moves_to_recent_log() {
         let reg = AgentRegistry::new();
         let id = Uuid::new_v4();

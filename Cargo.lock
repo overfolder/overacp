@@ -1149,6 +1149,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tracing",
  "tracing-subscriber",
