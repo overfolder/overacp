@@ -80,3 +80,12 @@ fn heartbeat_roundtrip() {
 fn message_with_tool_calls_roundtrip() {
     assert_roundtrip::<Message>(include_str!("fixtures/message_with_tool_calls.json"));
 }
+
+#[test]
+fn message_content_blocks_roundtrip() {
+    // Covers the `Content::Blocks` variant of the #[serde(untagged)]
+    // enum — verifies that multimodal content (blocks of opaque
+    // typed objects) parses correctly and that the untagged dispatch
+    // order doesn't silently reclassify a block-array as a string.
+    assert_roundtrip::<Message>(include_str!("fixtures/message_content_blocks.json"));
+}

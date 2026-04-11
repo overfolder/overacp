@@ -15,10 +15,6 @@ pub enum ProtocolError {
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
 
-    /// A token was structurally malformed (not three dot-separated segments).
-    #[error("malformed jwt: {0}")]
-    Malformed(&'static str),
-
     /// A token decoded cleanly but its `role` claim was not one of
     /// the recognized values (`"admin"`, `"agent"`).
     #[error("invalid role: {0}")]
