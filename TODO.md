@@ -173,9 +173,10 @@ abstraction; Docker/Morph backends are operator territory.
 - [ ] `overacp-workspace-rclone` — wraps the rclone CLI.
 - [ ] `WorkspaceSyncRegistry` in the agent crate, dispatching from
       `OVERACP_WORKSPACE_SYNC` env var.
-- [ ] End-to-end demo: clone repo, `cargo run`, mint an admin JWT,
+- [x] End-to-end demo: clone repo, `cargo run`, mint an admin JWT,
       `POST /tokens` for an agent, `POST /agents/{id}/messages`,
-      observe the SSE stream.
+      observe the SSE stream. *(Landed as `scripts/smoke-e2e.sh` —
+      requires `LLM_API_KEY` in `.env`.)*
 
 ## 0.6 — `overacp-tools-mcp` + Overfolder cutover
 
