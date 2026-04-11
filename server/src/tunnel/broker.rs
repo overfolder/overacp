@@ -1,10 +1,15 @@
-//! Per-session in-memory fan-out for `stream/*` notifications.
+//! Per-agent in-memory fan-out for `stream/*` and `turn/end`
+//! notifications.
 //!
-//! The REST surface from `docs/design/controlplane.md` § 3.5 will
-//! consume this via `subscribe(session_id)` to feed
-//! `GET /agents/{id}/stream` SSE clients. For now this lives
-//! in process; multi-node deployments will swap in a Valkey-backed
-//! impl later.
+//! The tunnel read loop forwards every `stream/*`, `turn/end`, and
+//! `heartbeat` frame it receives into one of these `broadcast`
+//! channels; the REST `GET /agents/{id}/stream` SSE handler reads
+//! from them. One channel per connected agent, keyed on the JWT
+//! `sub` / `agent_id`.
+//!
+//! For now this lives in process only; multi-replica deployments
+//! will swap in a Redis/Valkey-backed impl behind the same
+//! `StreamBroker` interface.
 
 use std::sync::Arc;
 
@@ -24,17 +29,17 @@ impl StreamBroker {
         Arc::new(Self::default())
     }
 
-    /// Get-or-create the broadcast sender for a session.
-    pub fn sender_for(&self, session_id: Uuid) -> broadcast::Sender<String> {
+    /// Get-or-create the broadcast sender for an agent.
+    pub fn sender_for(&self, agent_id: Uuid) -> broadcast::Sender<String> {
         self.bus
-            .entry(session_id)
+            .entry(agent_id)
             .or_insert_with(|| broadcast::channel::<String>(STREAM_BUFFER).0)
             .clone()
     }
 
-    /// Subscribe to a session's stream. Creates the channel if needed.
-    pub fn subscribe(&self, session_id: Uuid) -> broadcast::Receiver<String> {
-        self.sender_for(session_id).subscribe()
+    /// Subscribe to an agent's stream. Creates the channel if needed.
+    pub fn subscribe(&self, agent_id: Uuid) -> broadcast::Receiver<String> {
+        self.sender_for(agent_id).subscribe()
     }
 }
 

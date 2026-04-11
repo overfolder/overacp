@@ -15,21 +15,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use overacp_server::api::default_registry;
 use overacp_server::auth::Claims;
 use overacp_server::hooks::{
     BootError, BootProvider, DefaultBootProvider, DefaultQuotaPolicy, DefaultToolHost, QuotaError,
     QuotaPolicy, ToolError, ToolHost,
 };
-use overacp_server::{AppState, InMemoryStore, StaticJwtAuthenticator};
+use overacp_server::{AppState, StaticJwtAuthenticator};
 use uuid::Uuid;
 
 fn fresh_state() -> AppState {
-    AppState::new(
-        Arc::new(InMemoryStore::new()),
-        Arc::new(default_registry()),
-        Arc::new(StaticJwtAuthenticator::new("k", "overacp")),
-    )
+    AppState::new(Arc::new(StaticJwtAuthenticator::new("k", "overacp")))
 }
 
 fn agent_claims() -> Claims {

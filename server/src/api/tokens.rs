@@ -87,17 +87,11 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::api::default_registry;
     use crate::auth::StaticJwtAuthenticator;
     use crate::state::AppState;
-    use crate::store::InMemoryStore;
 
     fn state_with_issuer(issuer: &'static str) -> AppState {
-        AppState::new(
-            Arc::new(InMemoryStore::new()),
-            Arc::new(default_registry()),
-            Arc::new(StaticJwtAuthenticator::new("test-key", issuer)),
-        )
+        AppState::new(Arc::new(StaticJwtAuthenticator::new("test-key", issuer)))
     }
 
     #[tokio::test]

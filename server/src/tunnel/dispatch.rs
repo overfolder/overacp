@@ -173,16 +173,12 @@ mod tests {
         ToolHost,
     };
     use crate::registry::{AgentRegistry, MessageQueue};
-    use crate::store::InMemoryStore;
     use crate::tunnel::broker::StreamBroker;
     use crate::tunnel::run::TunnelContext;
-    use crate::tunnel::session_manager::new_session_manager;
 
     fn ctx_default(agent_id: Uuid) -> TunnelContext {
         TunnelContext {
             claims: Claims::agent(agent_id, Some(Uuid::new_v4()), 60, "test"),
-            store: Arc::new(InMemoryStore::new()),
-            sessions: new_session_manager(),
             registry: AgentRegistry::new(),
             message_queue: MessageQueue::default(),
             stream_broker: StreamBroker::new(),
@@ -430,8 +426,6 @@ mod tests {
     ) -> TunnelContext {
         TunnelContext {
             claims: Claims::agent(Uuid::new_v4(), None, 60, "test"),
-            store: Arc::new(InMemoryStore::new()),
-            sessions: new_session_manager(),
             registry: AgentRegistry::new(),
             message_queue: MessageQueue::default(),
             stream_broker: StreamBroker::new(),

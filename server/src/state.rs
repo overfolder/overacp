@@ -1,40 +1,17 @@
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
-use overacp_compute_core::ComputeProvider;
-use uuid::Uuid;
-
-use crate::api::ProviderRegistry;
 use crate::auth::Authenticator;
-use crate::basic_auth::HtpasswdFile;
 use crate::hooks::{
     BootProvider, DefaultBootProvider, DefaultQuotaPolicy, DefaultToolHost, QuotaPolicy, ToolHost,
 };
 use crate::registry::{AgentRegistry, MessageQueue};
-use crate::store::SessionStore;
 use crate::tunnel::broker::StreamBroker;
-use crate::tunnel::session_manager::{new_session_manager, SessionManager};
-
-/// Pool name → live `ComputeProvider` instance.
-///
-/// Populated as pools are loaded; the REST node routes
-/// (`/compute/pools/{pool}/nodes/...`) look up the running provider
-/// here and dispatch through it.
-pub type PoolRuntimes = RwLock<HashMap<String, Arc<dyn ComputeProvider>>>;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub store: Arc<dyn SessionStore>,
-    pub providers: Arc<ProviderRegistry>,
-    pub pool_runtimes: Arc<PoolRuntimes>,
     pub authenticator: Arc<dyn Authenticator>,
-    /// Legacy session table kept alive during the tunnel dual-
-    /// registration window. `run_tunnel` registers in both
-    /// `sessions` and `registry` so the Phase 5 cleanup can drop
-    /// this field without a knock-on behavioural change.
-    pub sessions: SessionManager,
-    /// Broker-shaped per-agent routing table. The source of truth
-    /// for every REST handler in `api/agents.rs`.
+    /// Per-agent routing table. The source of truth for every REST
+    /// handler in `api/agents.rs` and the tunnel write path.
     pub registry: AgentRegistry,
     /// Bounded per-agent buffer for `session/message` pushes that
     /// arrive while the agent's tunnel is disconnected.
@@ -46,35 +23,18 @@ pub struct AppState {
     pub tool_host: Arc<dyn ToolHost>,
     /// Operator hook for `quota/check` and `quota/update`.
     pub quota_policy: Arc<dyn QuotaPolicy>,
-    /// Htpasswd-backed credentials for control-plane HTTP Basic auth.
-    /// `None` means control-plane endpoints will return 503.
-    pub basic_auth: Option<Arc<HtpasswdFile>>,
-    /// User UUID attributed to control-plane writes made via HTTP
-    /// Basic auth (which carries no user identity). `None` means
-    /// control-plane handlers that need a user must reject the call.
-    pub default_user_id: Option<Uuid>,
 }
 
 impl AppState {
-    pub fn new(
-        store: Arc<dyn SessionStore>,
-        providers: Arc<ProviderRegistry>,
-        authenticator: Arc<dyn Authenticator>,
-    ) -> Self {
+    pub fn new(authenticator: Arc<dyn Authenticator>) -> Self {
         Self {
-            store,
-            providers,
-            pool_runtimes: Arc::new(RwLock::new(HashMap::new())),
             authenticator,
-            sessions: new_session_manager(),
             registry: AgentRegistry::new(),
             message_queue: MessageQueue::default(),
             stream_broker: StreamBroker::new(),
             boot_provider: Arc::new(DefaultBootProvider),
             tool_host: Arc::new(DefaultToolHost),
             quota_policy: Arc::new(DefaultQuotaPolicy),
-            basic_auth: None,
-            default_user_id: None,
         }
     }
 
@@ -98,33 +58,6 @@ impl AppState {
         self.quota_policy = policy;
         self
     }
-
-    /// Builder: attach a loaded htpasswd file for control-plane auth.
-    pub fn with_basic_auth(mut self, file: Arc<HtpasswdFile>) -> Self {
-        self.basic_auth = Some(file);
-        self
-    }
-
-    /// Builder: set the default user UUID for control-plane writes.
-    pub fn with_default_user_id(mut self, user: Uuid) -> Self {
-        self.default_user_id = Some(user);
-        self
-    }
-
-    pub fn register_pool_runtime(
-        &self,
-        pool: impl Into<String>,
-        provider: Arc<dyn ComputeProvider>,
-    ) {
-        self.pool_runtimes
-            .write()
-            .unwrap()
-            .insert(pool.into(), provider);
-    }
-
-    pub fn pool_runtime(&self, pool: &str) -> Option<Arc<dyn ComputeProvider>> {
-        self.pool_runtimes.read().unwrap().get(pool).cloned()
-    }
 }
 
 #[cfg(test)]
@@ -132,27 +65,13 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use serde_json::{json, Value};
+    use uuid::Uuid;
 
-    use crate::api::default_registry;
     use crate::auth::{Claims, StaticJwtAuthenticator};
     use crate::hooks::{BootError, BootProvider, QuotaError, QuotaPolicy, ToolError, ToolHost};
-    use crate::store::InMemoryStore;
 
     fn base() -> AppState {
-        AppState::new(
-            Arc::new(InMemoryStore::new()),
-            Arc::new(default_registry()),
-            Arc::new(StaticJwtAuthenticator::new("k", "overacp")),
-        )
-    }
-
-    #[test]
-    fn with_default_user_id_sets_field() {
-        let state = base();
-        assert!(state.default_user_id.is_none());
-        let uid = Uuid::new_v4();
-        let state = state.with_default_user_id(uid);
-        assert_eq!(state.default_user_id, Some(uid));
+        AppState::new(Arc::new(StaticJwtAuthenticator::new("k", "overacp")))
     }
 
     #[tokio::test]

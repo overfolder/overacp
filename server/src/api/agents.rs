@@ -259,19 +259,13 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::api::default_registry;
     use crate::auth::{Claims, StaticJwtAuthenticator};
     use crate::registry::{AgentEntry, MessageQueue};
     use crate::state::AppState;
-    use crate::store::InMemoryStore;
     use tokio::sync::mpsc;
 
     fn fresh_state() -> AppState {
-        AppState::new(
-            Arc::new(InMemoryStore::new()),
-            Arc::new(default_registry()),
-            Arc::new(StaticJwtAuthenticator::new("test", "overacp")),
-        )
+        AppState::new(Arc::new(StaticJwtAuthenticator::new("test", "overacp")))
     }
 
     fn state_with_queue_capacity(cap: usize) -> AppState {

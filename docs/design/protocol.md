@@ -114,14 +114,15 @@ populates these variables before starting the supervisor process.
 | `OVERACP_WORKSPACE_DIR` | no | Working directory for the child agent process. Defaults to the supervisor's launch CWD. There is no hardcoded `/workspace`. |
 | `OVERACP_RECONNECT_BACKOFF_MS` | no | Test override for the reconnect backoff base. |
 
-The `OVERACP_*` namespace is reserved for the supervisor; providers
-forward any additional `NodeSpec.env` entries verbatim so deployments
-can pass adapter-specific config (e.g. `ANTHROPIC_API_KEY`) without
-the controlplane having to know about it.
+The `OVERACP_*` namespace is reserved for the supervisor; any other
+environment variables are forwarded verbatim to the child so
+deployments can pass adapter-specific config (e.g.
+`ANTHROPIC_API_KEY`) without the broker having to know about it.
 
 The recommended **agent JWT TTL is 30 days**. Rotation is deferred
 (tracked in [`TODO.md`](../../TODO.md) and `SPEC.md` open questions);
-0.4 mints once at agent creation and does not refresh.
+the current reference server mints once via `POST /tokens` and does
+not refresh.
 
 ## 3. Method catalogue
 
@@ -132,9 +133,10 @@ Each method is tagged with its **origin**:
 
 - **ACP** — borrowed verbatim from the Zed/Anthropic Agent Client
   Protocol so external harnesses can plug in unchanged.
-- **MCP** — borrowed verbatim from the Model Context Protocol so the
-  controlplane-hosted tool host stays a thin re-export of upstream
-  MCP servers (see `SPEC.md` § Tool model, case A).
+- **MCP** — borrowed verbatim from the Model Context Protocol.
+  The operator's `ToolHost` hook typically fans out to one or more
+  MCP clients and re-exposes them through `tools/list` / `tools/call`
+  verbatim, so the wire names match upstream unchanged.
 - **extension** — over/ACP-specific. No upstream standard covers
   these; the names are ours.
 
@@ -188,13 +190,14 @@ operator calls `POST /agents/{id}/cancel`.
 
 ### 3.2 Tool surface
 
-Tools are hosted **on the controlplane**, not in the agent VM. The
-server runs MCP clients against operator-configured MCP servers and
-re-exposes them through `ToolHost` as a unified `tools/list` /
-`tools/call` surface. The agent never learns which tools came from
-MCP, and the agent compute environment never touches the MCP server
-directly. This is the "case A" model from `SPEC.md`; the alternative
-of injecting MCP server configs down into the child agent process is
+Tools are hosted **on the operator's trusted side**, not in the
+agent compute environment. The broker delegates every `tools/list`
+and `tools/call` to the operator's `ToolHost` hook, which typically
+runs MCP clients against operator-configured MCP servers and
+re-exposes them through `tools/list` / `tools/call` as a unified
+surface. The agent never learns which tools came from MCP, and the
+agent compute environment never touches the MCP server directly.
+Injecting MCP server configs down into the child agent process is
 explicitly out of scope.
 
 ### 3.3 Turn completion and quota (extensions)

@@ -10,10 +10,6 @@
 //! - `agent` — scoped to a single `agent_id` (the token's `sub`).
 //!   Can hold the matching `/tunnel/:agent_id` WebSocket and call
 //!   the agent-scoped REST endpoints for that same id.
-//!
-//! The legacy compute-plane routes (`/compute/...`) still sit
-//! behind HTTP Basic auth during the broker refactor. Phase 5
-//! deletes them.
 
 use std::sync::Arc;
 
@@ -29,9 +25,8 @@ use serde::Deserialize;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::api::{agents, compute_nodes_router, compute_router, tokens_router};
+use crate::api::{agents, tokens_router};
 use crate::auth::{Authenticator, Claims};
-use crate::basic_auth::require_basic_auth;
 use crate::state::AppState;
 use crate::tunnel::run::{run_tunnel, TunnelContext};
 
@@ -52,19 +47,11 @@ pub fn router(state: AppState) -> Router {
     let agent_scoped = agents::agent_scoped_router()
         .route_layer(from_fn_with_state(state.clone(), require_agent_or_admin));
 
-    // Legacy control-plane sub-routers (operator/orchestrator-facing).
-    // HTTP Basic auth until Phase 5 deletes them entirely.
-    let control_plane = Router::new()
-        .merge(compute_router())
-        .merge(compute_nodes_router())
-        .route_layer(from_fn_with_state(state.clone(), require_basic_auth));
-
     Router::new()
         .route("/healthz", get(healthz))
         .route("/tunnel/:agent_id", get(tunnel_upgrade))
         .merge(admin_only)
         .merge(agent_scoped)
-        .merge(control_plane)
         .with_state(state)
 }
 
@@ -188,8 +175,6 @@ async fn tunnel_upgrade(
 
     let ctx = Arc::new(TunnelContext {
         claims: claims.clone(),
-        store: state.store.clone(),
-        sessions: state.sessions.clone(),
         registry: state.registry.clone(),
         message_queue: state.message_queue.clone(),
         stream_broker: state.stream_broker.clone(),

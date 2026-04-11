@@ -1,41 +1,33 @@
 //! `run_tunnel` — read/write loops for a single connected agent.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tokio::time;
 use tracing::info;
 
 use crate::auth::Claims;
 use crate::hooks::{BootProvider, QuotaPolicy, ToolHost};
 use crate::registry::{AgentEntry, AgentRegistry, MessageQueue};
-use crate::store::SessionStore;
 use crate::tunnel::broker::StreamBroker;
 use crate::tunnel::dispatch::handle_message;
-use crate::tunnel::session_manager::{SessionManager, TunnelHandle};
 
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Context passed to message handlers. Carries the agent's claims,
-/// the in-memory routing state (`sessions`, `stream_broker`), and
-/// the three operator hooks the dispatch table delegates to
-/// (`BootProvider`, `ToolHost`, `QuotaPolicy`).
+/// the in-memory routing state (`registry`, `stream_broker`,
+/// `message_queue`), and the three operator hooks the dispatch
+/// table delegates to (`BootProvider`, `ToolHost`, `QuotaPolicy`).
 ///
 /// The fourth hook from the SPEC, `Authenticator`, lives on
 /// `AppState` and is consumed by the upgrade handler in
 /// [`crate::routes`] before the context is built — by the time
 /// dispatch runs the JWT has already been validated.
-///
-/// `store` is here only because the legacy `/agents/{id}/...` REST
-/// surface (which still uses `SessionStore`) hangs off `AppState`
-/// during the broker refactor. The tunnel itself does not read it.
 pub struct TunnelContext {
     pub claims: Claims,
-    pub store: Arc<dyn SessionStore>,
-    pub sessions: SessionManager,
     pub registry: AgentRegistry,
     pub message_queue: MessageQueue,
     pub stream_broker: Arc<StreamBroker>,
@@ -53,19 +45,7 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
 
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
-    // Register in both the legacy session table and the new agent
-    // registry. The legacy `sessions` table is no longer read by
-    // any REST handler but stays live during the dual-registration
-    // window so Phase 5 can drop it without a behavioural change.
-    ctx.sessions.insert(
-        agent_id,
-        TunnelHandle {
-            tx: tx.clone(),
-            claims: claims.clone(),
-            last_activity: Instant::now(),
-            poll_cursor: Mutex::new(None),
-        },
-    );
+    // Register the agent in the routing table.
     ctx.registry
         .register(agent_id, AgentEntry::new(tx, claims.clone()));
 
@@ -126,9 +106,6 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
     while let Some(Ok(msg)) = ws_rx.next().await {
         match msg {
             Message::Text(text) => {
-                if let Some(mut handle) = ctx.sessions.get_mut(&agent_id) {
-                    handle.last_activity = Instant::now();
-                }
                 if let Some(entry) = ctx.registry.get(agent_id) {
                     entry.touch();
                 }
@@ -146,8 +123,8 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
                 }
 
                 if let Some(response) = handle_message(&text, &ctx).await {
-                    if let Some(handle) = ctx.sessions.get(&agent_id) {
-                        let _ = handle.tx.send(response);
+                    if let Some(entry) = ctx.registry.get(agent_id) {
+                        let _ = entry.tx.send(response);
                     }
                 }
             }
@@ -159,7 +136,6 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
         }
     }
 
-    ctx.sessions.remove(&agent_id);
     ctx.registry.unregister(agent_id);
     ping_task.abort();
     write_task.abort();

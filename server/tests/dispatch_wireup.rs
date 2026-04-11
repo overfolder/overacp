@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use overacp_server::api::default_registry;
 use overacp_server::auth::Claims;
 use overacp_server::hooks::{
     BootError, BootProvider, QuotaError, QuotaPolicy, ToolError, ToolHost,
@@ -22,7 +21,7 @@ use overacp_server::hooks::{
 use overacp_server::tunnel::dispatch::handle_message;
 use overacp_server::tunnel::run::TunnelContext;
 use overacp_server::tunnel::StreamBroker;
-use overacp_server::{AppState, InMemoryStore, StaticJwtAuthenticator};
+use overacp_server::{AppState, StaticJwtAuthenticator};
 use uuid::Uuid;
 
 // ── Tracing hooks so we can prove dispatch reached them ──
@@ -81,20 +80,16 @@ impl QuotaPolicy for TracingQuota {
 }
 
 fn build_state(counts: Arc<Counts>) -> AppState {
-    AppState::new(
-        Arc::new(InMemoryStore::new()),
-        Arc::new(default_registry()),
-        Arc::new(StaticJwtAuthenticator::new("k", "overacp")),
-    )
-    .with_boot_provider(Arc::new(TracingBoot {
-        counts: counts.clone(),
-    }))
-    .with_tool_host(Arc::new(TracingTools {
-        counts: counts.clone(),
-    }))
-    .with_quota_policy(Arc::new(TracingQuota {
-        counts: counts.clone(),
-    }))
+    AppState::new(Arc::new(StaticJwtAuthenticator::new("k", "overacp")))
+        .with_boot_provider(Arc::new(TracingBoot {
+            counts: counts.clone(),
+        }))
+        .with_tool_host(Arc::new(TracingTools {
+            counts: counts.clone(),
+        }))
+        .with_quota_policy(Arc::new(TracingQuota {
+            counts: counts.clone(),
+        }))
 }
 
 /// Mirror of how `routes::tunnel_upgrade` constructs `TunnelContext`.
@@ -103,8 +98,6 @@ fn build_state(counts: Arc<Counts>) -> AppState {
 fn build_ctx(state: &AppState, agent_id: Uuid) -> TunnelContext {
     TunnelContext {
         claims: Claims::agent(agent_id, Some(Uuid::new_v4()), 60, "overacp"),
-        store: state.store.clone(),
-        sessions: state.sessions.clone(),
         registry: state.registry.clone(),
         message_queue: state.message_queue.clone(),
         stream_broker: state.stream_broker.clone(),

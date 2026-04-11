@@ -24,12 +24,9 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
-use overacp_server::api::default_registry;
 use overacp_server::auth::{Authenticator, Claims};
 use overacp_server::registry::{AgentEntry, MessageQueue};
-use overacp_server::{
-    router, AppState, InMemoryStore, StaticJwtAuthenticator,
-};
+use overacp_server::{router, AppState, StaticJwtAuthenticator};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tower::ServiceExt;
@@ -41,11 +38,7 @@ const ISSUER: &str = "overacp";
 fn fresh_state() -> (AppState, Arc<dyn Authenticator>) {
     let auth: Arc<dyn Authenticator> =
         Arc::new(StaticJwtAuthenticator::new(SIGNING_KEY, ISSUER));
-    let state = AppState::new(
-        Arc::new(InMemoryStore::new()),
-        Arc::new(default_registry()),
-        auth.clone(),
-    );
+    let state = AppState::new(auth.clone());
     (state, auth)
 }
 

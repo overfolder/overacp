@@ -7,21 +7,14 @@
 
 use std::sync::Arc;
 
-use overacp_server::api::default_registry;
 use overacp_server::auth::Claims;
 use overacp_server::registry::{AgentEntry, QueueError};
-use overacp_server::{
-    AgentRegistry, AppState, InMemoryStore, MessageQueue, StaticJwtAuthenticator,
-};
+use overacp_server::{AgentRegistry, AppState, MessageQueue, StaticJwtAuthenticator};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 fn fresh_state() -> AppState {
-    AppState::new(
-        Arc::new(InMemoryStore::new()),
-        Arc::new(default_registry()),
-        Arc::new(StaticJwtAuthenticator::new("k", "overacp")),
-    )
+    AppState::new(Arc::new(StaticJwtAuthenticator::new("k", "overacp")))
 }
 
 fn live_entry() -> (mpsc::UnboundedReceiver<String>, AgentEntry, Claims) {

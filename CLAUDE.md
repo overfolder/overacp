@@ -26,17 +26,23 @@ part of the same change.
 
 ## Workspace layout
 
-Authoritative state lives in [`STATUS.md`](./STATUS.md). At time of
-writing the only landed crate is:
+Authoritative state lives in [`STATUS.md`](./STATUS.md). Landed
+crates:
 
-- `loop/` — `overloop`, the reference agent (vendored). Speaks
-  over/ACP on stdio.
+- `server/` — `overacp-server`, the stateless message broker.
+  JWT-gated WebSocket tunnel + REST adapters + four operator hooks
+  (`BootProvider`, `ToolHost`, `QuotaPolicy`, `Authenticator`).
+- `compute/` — `overacp-compute-core`, a standalone library that
+  exposes the `ComputeProvider` trait for operators who want a
+  ready-made compute abstraction. Not used by the broker itself.
+- `agent/` — `overacp-agent`, currently the boot-config surface;
+  WS supervisor and stdio bridge are planned follow-ups.
+- `loop/` — `overloop`, the reference child agent (vendored).
+  Speaks over/ACP on stdio.
 
 Planned crates per the SPEC roadmap:
 
 - `protocol/` — `overacp-protocol`, pure wire types (no I/O).
-- `agent/` — `overacp-agent`, the WS supervisor that connects to the
-  server and bridges stdio to a child agent process.
 
 Check `STATUS.md` before assuming a crate exists.
 

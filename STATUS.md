@@ -57,8 +57,15 @@ broker. The code is mid-migration on `refactor/stateless-broker`:
   `require_admin` for the listing, describe, disconnect, and mint
   routes; `require_agent_or_admin` for the agent-scoped streaming
   routes where an agent JWT with matching `sub` is accepted.
-  The legacy compute-plane REST (`/compute/*`) still sits behind
-  HTTP Basic auth and will be deleted in Phase 5.
+- **Phase 5 (controlplane deletion)** — landed. The legacy
+  `SessionStore` trait + `InMemoryStore`, HTTP Basic auth, and the
+  entire `/compute/*` REST surface (pools, providers, nodes) have
+  been removed from `overacp-server`. `TunnelContext` no longer
+  carries `store` or `sessions`; `AppState::new` takes a single
+  `Authenticator` argument. The server's dependency on
+  `overacp-compute-core` is gone (the crate remains available as
+  a standalone library for operators). `SessionManager` and the
+  old session-id path segment are deleted outright.
 
 ## Crates
 
@@ -68,7 +75,7 @@ broker. The code is mid-migration on `refactor/stateless-broker`:
 | `overacp-compute-core` | Landed as a standalone library. `ComputeProvider` trait + node/exec/log types + `${provider:path:key}` config resolver. The broker no longer depends on it; operators can pull it in directly. |
 | `overacp-protocol` | Not started. |
 | `overacp-agent` | Boot-config crate landed; supervisor + stdio bridge not started. |
-| `overacp-server` | Mid-refactor on `refactor/stateless-broker`. The broker core has landed: JWT `Claims` + `mint`, operator hooks (`BootProvider`, `ToolHost`, `QuotaPolicy`) with default impls, hook-delegating tunnel dispatch, `AgentRegistry`, `MessageQueue`, and the new REST surface (`POST /tokens`, `GET /agents`, `GET /agents/{id}`, `DELETE /agents/{id}`, `POST /agents/{id}/messages`, `GET /agents/{id}/stream`, `POST /agents/{id}/cancel`) with JWT middleware gating. The legacy `SessionStore`, compute REST surface, and HTTP Basic auth still exist on disk and will be removed in Phase 5. |
+| `overacp-server` | Broker refactor complete on `refactor/stateless-broker`: JWT `Claims` + `mint`, operator hooks (`BootProvider`, `ToolHost`, `QuotaPolicy`) with default impls, hook-delegating tunnel dispatch, `AgentRegistry`, `MessageQueue`, and the new REST surface (`POST /tokens`, `GET /agents`, `GET /agents/{id}`, `DELETE /agents/{id}`, `POST /agents/{id}/messages`, `GET /agents/{id}/stream`, `POST /agents/{id}/cancel`) with JWT middleware gating. The legacy `SessionStore`, compute REST surface, and HTTP Basic auth have been removed. |
 | `overacp-tools-mcp` | Not started. |
 | `examples/*` | Not started. |
 
