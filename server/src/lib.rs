@@ -6,6 +6,7 @@ pub mod api;
 pub mod auth;
 pub mod basic_auth;
 pub mod hooks;
+pub mod registry;
 pub mod routes;
 pub mod state;
 pub mod store;
@@ -18,6 +19,7 @@ pub use hooks::{
     BootError, BootProvider, DefaultBootProvider, DefaultQuotaPolicy, DefaultToolHost, QuotaError,
     QuotaPolicy, ToolError, ToolHost,
 };
+pub use registry::{AgentDescription, AgentEntry, AgentRegistry, MessageQueue, QueueError};
 pub use routes::router;
 pub use state::AppState;
 pub use store::{

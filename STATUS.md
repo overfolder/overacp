@@ -31,6 +31,18 @@ broker. The code is mid-migration on `refactor/stateless-broker`:
   as a server → agent push. `TunnelContext` carries the hooks and
   `routes::tunnel_upgrade` constructs it from `AppState`. The legacy
   `SessionStore` is no longer touched by the dispatch table.
+- **Phase 4a (AgentRegistry + MessageQueue)** — landed. New
+  `server/src/registry/` module exposes `AgentRegistry` (per-agent
+  routing table keyed on the JWT `sub` with a bounded
+  recently-disconnected log) and `MessageQueue` (bounded per-agent
+  buffer of `session/message` frames pushed via REST while the
+  agent's tunnel is disconnected). Both are wired into `AppState`
+  alongside the legacy `SessionManager`. The tunnel `run_tunnel`
+  loop now registers in both tables, drains the queue on
+  (re)connect before yielding to the read loop, and unregisters on
+  disconnect. The legacy `SessionManager` and `/agents/{id}/...`
+  REST surface still exist for now; Phase 4b rewrites the REST
+  surface against the new registry.
 
 ## Crates
 

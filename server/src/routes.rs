@@ -64,6 +64,8 @@ async fn tunnel_upgrade(
         claims: claims.clone(),
         store: state.store.clone(),
         sessions: state.sessions.clone(),
+        registry: state.registry.clone(),
+        message_queue: state.message_queue.clone(),
         stream_broker: state.stream_broker.clone(),
         boot_provider: state.boot_provider.clone(),
         tool_host: state.tool_host.clone(),

@@ -11,6 +11,7 @@ use tracing::info;
 
 use crate::auth::Claims;
 use crate::hooks::{BootProvider, QuotaPolicy, ToolHost};
+use crate::registry::{AgentEntry, AgentRegistry, MessageQueue};
 use crate::store::SessionStore;
 use crate::tunnel::broker::StreamBroker;
 use crate::tunnel::dispatch::handle_message;
@@ -35,6 +36,8 @@ pub struct TunnelContext {
     pub claims: Claims,
     pub store: Arc<dyn SessionStore>,
     pub sessions: SessionManager,
+    pub registry: AgentRegistry,
+    pub message_queue: MessageQueue,
     pub stream_broker: Arc<StreamBroker>,
     pub boot_provider: Arc<dyn BootProvider>,
     pub tool_host: Arc<dyn ToolHost>,
@@ -50,15 +53,38 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
 
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
+    // Register in both the legacy session table (still used by the
+    // controlplane-era /agents/{id}/... REST surface) and the new
+    // agent registry. Phase 4b drops the legacy half.
     ctx.sessions.insert(
         agent_id,
         TunnelHandle {
-            tx,
+            tx: tx.clone(),
             claims: claims.clone(),
             last_activity: Instant::now(),
             poll_cursor: Mutex::new(None),
         },
     );
+    ctx.registry
+        .register(agent_id, AgentEntry::new(tx, claims.clone()));
+
+    // Drain any session/message pushes that arrived while this
+    // agent's tunnel was disconnected. The drain happens before we
+    // yield to the read loop so the agent sees the buffered frames
+    // first.
+    let buffered = ctx.message_queue.drain(agent_id);
+    if !buffered.is_empty() {
+        info!(
+            %agent_id,
+            count = buffered.len(),
+            "draining buffered session/message frames on reconnect"
+        );
+        if let Some(entry) = ctx.registry.get(agent_id) {
+            for frame in buffered {
+                let _ = entry.tx.send(frame);
+            }
+        }
+    }
 
     info!(%agent_id, role = %claims.role, "tunnel connected");
 
@@ -102,6 +128,9 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
                 if let Some(mut handle) = ctx.sessions.get_mut(&agent_id) {
                     handle.last_activity = Instant::now();
                 }
+                if let Some(entry) = ctx.registry.get(agent_id) {
+                    entry.touch();
+                }
 
                 // Best-effort fan-out of stream/* and turn/end
                 // notifications to the in-memory broker so SSE
@@ -130,6 +159,7 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
     }
 
     ctx.sessions.remove(&agent_id);
+    ctx.registry.unregister(agent_id);
     ping_task.abort();
     write_task.abort();
     info!(%agent_id, "tunnel disconnected");

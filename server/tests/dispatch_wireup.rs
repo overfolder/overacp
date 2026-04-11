@@ -105,6 +105,8 @@ fn build_ctx(state: &AppState, agent_id: Uuid) -> TunnelContext {
         claims: Claims::agent(agent_id, Some(Uuid::new_v4()), 60, "overacp"),
         store: state.store.clone(),
         sessions: state.sessions.clone(),
+        registry: state.registry.clone(),
+        message_queue: state.message_queue.clone(),
         stream_broker: state.stream_broker.clone(),
         boot_provider: state.boot_provider.clone(),
         tool_host: state.tool_host.clone(),

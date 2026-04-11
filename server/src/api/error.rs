@@ -21,6 +21,10 @@ pub enum ApiError {
     BadRequest(String),
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    /// Back-pressure: a downstream resource is temporarily
+    /// unavailable. Mapped to HTTP 503.
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
     /// Body parsed as JSON but did not match the flat-string-map
     /// shape required by `PoolConfig`.
     #[error("malformed pool config: {0}")]
@@ -60,6 +64,11 @@ impl IntoResponse for ApiError {
                 );
                 resp
             }
+            Self::ServiceUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "service_unavailable", "message": msg })),
+            )
+                .into_response(),
             Self::MalformedConfig(e) => (
                 StatusCode::BAD_REQUEST,
                 Json(json!({ "error": "bad_request", "message": e.to_string() })),

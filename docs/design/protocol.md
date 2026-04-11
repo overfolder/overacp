@@ -176,9 +176,11 @@ broker itself never inspects the response.
 user message to a connected agent. The body travels **inline in the
 notification** — there is no separate poll round-trip. The agent
 appends the message to its in-memory history and starts its turn
-loop. (Buffering of pushes that arrive while the tunnel is
-disconnected is planned but not yet implemented; see STATUS.md for
-the current phase of the broker refactor.)
+loop. If the agent is disconnected when the broker receives a push
+via `POST /agents/{id}/messages`, the broker buffers the
+notification in a bounded in-memory `MessageQueue` and drains it on
+the next reconnect, before yielding to live traffic. The buffer is
+in-memory and lossy across broker restarts.
 
 `session/cancel` is a server → agent notification that asks the
 agent to abandon its current turn. Pushed by the broker when the

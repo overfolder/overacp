@@ -172,6 +172,7 @@ mod tests {
         BootProvider, DefaultBootProvider, DefaultQuotaPolicy, DefaultToolHost, QuotaPolicy,
         ToolHost,
     };
+    use crate::registry::{AgentRegistry, MessageQueue};
     use crate::store::InMemoryStore;
     use crate::tunnel::broker::StreamBroker;
     use crate::tunnel::run::TunnelContext;
@@ -182,6 +183,8 @@ mod tests {
             claims: Claims::agent(agent_id, Some(Uuid::new_v4()), 60, "test"),
             store: Arc::new(InMemoryStore::new()),
             sessions: new_session_manager(),
+            registry: AgentRegistry::new(),
+            message_queue: MessageQueue::default(),
             stream_broker: StreamBroker::new(),
             boot_provider: Arc::new(DefaultBootProvider),
             tool_host: Arc::new(DefaultToolHost),
@@ -429,6 +432,8 @@ mod tests {
             claims: Claims::agent(Uuid::new_v4(), None, 60, "test"),
             store: Arc::new(InMemoryStore::new()),
             sessions: new_session_manager(),
+            registry: AgentRegistry::new(),
+            message_queue: MessageQueue::default(),
             stream_broker: StreamBroker::new(),
             boot_provider: boot,
             tool_host: tools,

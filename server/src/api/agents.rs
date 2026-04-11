@@ -23,6 +23,7 @@ use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use crate::api::error::ApiError;
+use crate::registry::QueueError;
 use crate::state::AppState;
 use crate::store::{Agent, Message};
 
@@ -82,6 +83,11 @@ async fn require_agent(state: &AppState, id: &str) -> Result<Agent, ApiError> {
 /// conversation table (legacy, still here until Phase 5 deletes the
 /// store) and push a `session/message` notification down the agent's
 /// tunnel with the body inline, as in protocol.md § 3.1.
+///
+/// If the agent's tunnel is currently disconnected, the notification
+/// is buffered in the per-agent `MessageQueue` and drained when the
+/// tunnel next reconnects (`run_tunnel` calls `MessageQueue::drain`
+/// before yielding to the read loop).
 async fn send_message(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -91,28 +97,63 @@ async fn send_message(
         return Err(ApiError::BadRequest("'role' must not be empty".into()));
     }
     let agent = require_agent(&state, &id).await?;
+
+    let notif = json!({
+        "jsonrpc": "2.0",
+        "method": "session/message",
+        "params": {
+            "role": req.role,
+            "content": req.content,
+        },
+    })
+    .to_string();
+
+    // Decide + execute the delivery plan BEFORE touching the store.
+    // If the plan fails (e.g. queue at capacity), we want to return
+    // 503 without leaving a persisted-but-undelivered message in the
+    // conversation log that a client retry would duplicate.
+    if let Some(handle) = state.sessions.get(&agent.conversation_id) {
+        // Live tunnel — deliver inline.
+        let _ = handle.tx.send(notif);
+    } else if let Some(jwt_sub) = uuid_from_agent_id(&agent.id) {
+        // No live tunnel — buffer for the next reconnect. The
+        // routing key here is the agent's UUID (the JWT `sub`),
+        // not the legacy `conversation_id`; once Phase 4b lands
+        // the registry will be the only routing key.
+        //
+        // If the per-agent queue is at capacity we surface that as
+        // 503 SERVICE_UNAVAILABLE so the operator's REST client
+        // sees real back-pressure rather than a phantom success.
+        if let Err(QueueError::Full { capacity, .. }) =
+            state.message_queue.push(jwt_sub, notif)
+        {
+            return Err(ApiError::ServiceUnavailable(format!(
+                "agent {jwt_sub} message queue is full ({capacity}); retry later"
+            )));
+        }
+    }
+    // else: no live tunnel AND the legacy agent row has a non-UUID
+    // id, so we can't route through the new queue either. The
+    // notification is silently dropped — this path only exists for
+    // legacy rows that predate Phase 4a and will be removed in
+    // Phase 4b alongside the legacy `Agent` type.
+
+    // Delivery (or buffering) succeeded — now persist. The store
+    // still owns the conversation log until Phase 5 strips it.
     let message = state
         .store
-        .append_message(agent.conversation_id, &req.role, req.content.clone())
+        .append_message(agent.conversation_id, &req.role, req.content)
         .await?;
 
-    // Best-effort notify: if the tunnel is currently connected we
-    // emit `session/message` with the body inline. The legacy
-    // routing key here is `agent.conversation_id`; once Phase 4a
-    // lands the registry will key on `agent_id` directly.
-    if let Some(handle) = state.sessions.get(&agent.conversation_id) {
-        let notif = json!({
-            "jsonrpc": "2.0",
-            "method": "session/message",
-            "params": {
-                "role": req.role,
-                "content": req.content,
-            },
-        });
-        let _ = handle.tx.send(notif.to_string());
-    }
-
     Ok((StatusCode::CREATED, Json(SendMessageResponse { message })))
+}
+
+/// Try to parse `agent.id` (a `String` in the legacy `Agent` row)
+/// as a `Uuid` for use as a `MessageQueue` routing key. Returns
+/// `None` for non-UUID legacy ids; those agents simply lose their
+/// disconnected pushes — the legacy schema predates Phase 4a.
+fn uuid_from_agent_id(id: &str) -> Option<Uuid> {
+    Uuid::parse_str(id).ok()
 }
 
 /// `GET /agents/{id}/messages?since=…` — poll conversation history.
@@ -189,13 +230,20 @@ mod tests {
     use crate::tunnel::session_manager::TunnelHandle;
 
     async fn seed_agent(state: &AppState) -> Agent {
+        // Use a UUID id so the buffer-on-disconnect path can route
+        // by it. Legacy non-UUID ids still work, they just don't
+        // get queue buffering.
+        seed_agent_with_id(state, Uuid::new_v4().to_string()).await
+    }
+
+    async fn seed_agent_with_id(state: &AppState, id: String) -> Agent {
         let conv = state
             .store
             .create_conversation("user-1")
             .await
             .expect("create_conversation");
         let agent = Agent {
-            id: "ag_test".into(),
+            id,
             user: "user-1".into(),
             conversation_id: conv.id,
             pool_name: "pool-a".into(),
@@ -321,6 +369,95 @@ mod tests {
             .await
             .expect("cancel_turn");
         assert_eq!(status, StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn send_message_returns_503_when_queue_full() {
+        use crate::registry::MessageQueue;
+
+        // Build state with a tiny per-agent queue capacity so we can
+        // overflow it deterministically. The default capacity is 64.
+        let state = AppState::new(
+            Arc::new(InMemoryStore::new()),
+            Arc::new(default_registry()),
+            Arc::new(StaticJwtAuthenticator::new("test", "overacp")),
+        );
+        let state = AppState {
+            message_queue: MessageQueue::new(1),
+            ..state
+        };
+        let agent_uuid = Uuid::new_v4();
+        let agent = seed_agent_with_id(&state, agent_uuid.to_string()).await;
+
+        // First message buffers fine.
+        let _ = send_message(
+            State(state.clone()),
+            Path(agent.id.clone()),
+            Json(SendMessageRequest {
+                role: "user".into(),
+                content: json!("a"),
+            }),
+        )
+        .await
+        .expect("first push");
+
+        // Second message overflows the queue → 503.
+        let err = send_message(
+            State(state.clone()),
+            Path(agent.id.clone()),
+            Json(SendMessageRequest {
+                role: "user".into(),
+                content: json!("b"),
+            }),
+        )
+        .await
+        .expect_err("queue full");
+        assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+
+        // Invariant: the rejected push must NOT leave an orphan
+        // persisted message in the conversation log. Only the
+        // first (successful) push should be visible.
+        let persisted = state
+            .store
+            .list_messages(agent.conversation_id, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            persisted.len(),
+            1,
+            "503 back-pressure leaked a persisted message"
+        );
+        assert_eq!(persisted[0].content, json!("a"));
+    }
+
+    #[tokio::test]
+    async fn send_message_buffers_in_message_queue_when_disconnected() {
+        // No live tunnel installed, but the agent_id is a valid UUID
+        // (the new buffer-on-disconnect path requires this), so the
+        // notification should land in the per-agent message queue
+        // instead of being silently dropped.
+        let state = test_state();
+        let agent_uuid = Uuid::new_v4();
+        let agent = seed_agent_with_id(&state, agent_uuid.to_string()).await;
+
+        let (status, _) = send_message(
+            State(state.clone()),
+            Path(agent.id.clone()),
+            Json(SendMessageRequest {
+                role: "user".into(),
+                content: json!({ "text": "while you were out" }),
+            }),
+        )
+        .await
+        .expect("send_message");
+        assert_eq!(status, StatusCode::CREATED);
+
+        // The notification is buffered keyed by the parsed UUID.
+        assert_eq!(state.message_queue.len(agent_uuid), 1);
+        let drained = state.message_queue.drain(agent_uuid);
+        let parsed: Value = serde_json::from_str(&drained[0]).unwrap();
+        assert_eq!(parsed["method"], "session/message");
+        assert_eq!(parsed["params"]["content"]["text"], "while you were out");
     }
 
     #[tokio::test]

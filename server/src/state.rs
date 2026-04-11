@@ -10,6 +10,7 @@ use crate::basic_auth::HtpasswdFile;
 use crate::hooks::{
     BootProvider, DefaultBootProvider, DefaultQuotaPolicy, DefaultToolHost, QuotaPolicy, ToolHost,
 };
+use crate::registry::{AgentRegistry, MessageQueue};
 use crate::store::SessionStore;
 use crate::tunnel::broker::StreamBroker;
 use crate::tunnel::session_manager::{new_session_manager, SessionManager};
@@ -28,6 +29,13 @@ pub struct AppState {
     pub pool_runtimes: Arc<PoolRuntimes>,
     pub authenticator: Arc<dyn Authenticator>,
     pub sessions: SessionManager,
+    /// New broker-shaped per-agent routing table. Replaces
+    /// `sessions` once the legacy `/agents/{id}/...` REST surface
+    /// is rewritten in Phase 4b.
+    pub registry: AgentRegistry,
+    /// Bounded per-agent buffer for `session/message` pushes that
+    /// arrive while the agent's tunnel is disconnected.
+    pub message_queue: MessageQueue,
     pub stream_broker: Arc<StreamBroker>,
     /// Operator hook for `initialize` — see `hooks::BootProvider`.
     pub boot_provider: Arc<dyn BootProvider>,
@@ -56,6 +64,8 @@ impl AppState {
             pool_runtimes: Arc::new(RwLock::new(HashMap::new())),
             authenticator,
             sessions: new_session_manager(),
+            registry: AgentRegistry::new(),
+            message_queue: MessageQueue::default(),
             stream_broker: StreamBroker::new(),
             boot_provider: Arc::new(DefaultBootProvider),
             tool_host: Arc::new(DefaultToolHost),
