@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde_json::Value;
 use std::future::Future;
 
 use crate::llm::{CompletionResponse, Message, StopReason, ToolDefinition, Usage};
@@ -38,6 +39,18 @@ pub enum NextPush {
 pub trait AcpService {
     fn stream_text_delta(&mut self, text: &str) -> Result<()>;
     fn stream_activity(&mut self, activity: &str) -> Result<()>;
+
+    /// Notification emitted immediately before a tool is invoked.
+    /// `id` is the tool-call id from the model's response;
+    /// `arguments` is the raw argument JSON that will be passed to
+    /// the tool. The matching `stream_tool_result` call echoes the
+    /// same `id`.
+    fn stream_tool_call(&mut self, id: &str, name: &str, arguments: &Value) -> Result<()>;
+
+    /// Notification emitted immediately after a tool invocation
+    /// returns. `id` echoes the one from `stream_tool_call`.
+    fn stream_tool_result(&mut self, id: &str, content: &Value, is_error: bool) -> Result<()>;
+
     /// Fire-and-forget notification emitted when a turn completes,
     /// carrying the turn's messages and usage totals. The broker fans
     /// this out to SSE subscribers.

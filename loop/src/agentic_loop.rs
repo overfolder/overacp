@@ -142,14 +142,27 @@ pub async fn run(
                 let args: Value =
                     serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
 
+                // Human-readable activity log — kept for back-compat
+                // with consumers that only watch stream/activity.
                 let _ = acp.stream_activity(&format!("Running tool: {}", name));
+
+                // Machine-readable observability: stream/toolCall
+                // fires BEFORE the invocation, stream/toolResult
+                // fires AFTER, both echoing the same tool-call id.
+                let _ = acp.stream_tool_call(&tc.id, name, &args);
 
                 let result = registry.execute(name, args).await;
 
-                let (content, _is_error) = match result {
+                let (content, is_error) = match result {
                     Ok(output) => (output, false),
                     Err(err) => (format!("Error: {}", err), true),
                 };
+
+                let _ = acp.stream_tool_result(
+                    &tc.id,
+                    &Value::String(content.clone()),
+                    is_error,
+                );
 
                 messages.push(Message {
                     role: Role::Tool,

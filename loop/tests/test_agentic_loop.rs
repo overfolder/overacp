@@ -6,9 +6,28 @@ use overloop::llm::{
 };
 use overloop::tools::ToolRegistry;
 use overloop::traits::{AcpService, LlmService, NextPush, StreamedResponse};
+use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Duration;
+
+/// Captured `stream/toolCall` frame.
+#[derive(Debug, Clone)]
+struct ToolCallFrame {
+    id: String,
+    name: String,
+    #[allow(dead_code)]
+    arguments: Value,
+}
+
+/// Captured `stream/toolResult` frame.
+#[derive(Debug, Clone)]
+struct ToolResultFrame {
+    id: String,
+    #[allow(dead_code)]
+    content: Value,
+    is_error: bool,
+}
 
 // ─── Mock LLM ────────────────────────────────────────────────────
 
@@ -58,6 +77,8 @@ impl LlmService for MockLlm {
 struct MockAcp {
     text_deltas: Vec<String>,
     activities: Vec<String>,
+    tool_calls_streamed: Vec<ToolCallFrame>,
+    tool_results_streamed: Vec<ToolResultFrame>,
     quota_allowed: bool,
     turn_ended: bool,
     turn_end_usage: Option<Usage>,
@@ -69,6 +90,8 @@ impl MockAcp {
         Self {
             text_deltas: Vec::new(),
             activities: Vec::new(),
+            tool_calls_streamed: Vec::new(),
+            tool_results_streamed: Vec::new(),
             quota_allowed,
             turn_ended: false,
             turn_end_usage: None,
@@ -85,6 +108,24 @@ impl AcpService for MockAcp {
 
     fn stream_activity(&mut self, activity: &str) -> Result<()> {
         self.activities.push(activity.to_string());
+        Ok(())
+    }
+
+    fn stream_tool_call(&mut self, id: &str, name: &str, arguments: &Value) -> Result<()> {
+        self.tool_calls_streamed.push(ToolCallFrame {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.clone(),
+        });
+        Ok(())
+    }
+
+    fn stream_tool_result(&mut self, id: &str, content: &Value, is_error: bool) -> Result<()> {
+        self.tool_results_streamed.push(ToolResultFrame {
+            id: id.to_string(),
+            content: content.clone(),
+            is_error,
+        });
         Ok(())
     }
 
@@ -227,6 +268,15 @@ async fn test_tool_call_round_trip() {
         acp.activities
     );
 
+    // Machine-readable observability: stream/toolCall + stream/toolResult
+    // should each have fired exactly once, with matching ids.
+    assert_eq!(acp.tool_calls_streamed.len(), 1);
+    assert_eq!(acp.tool_results_streamed.len(), 1);
+    assert_eq!(acp.tool_calls_streamed[0].name, "exec");
+    assert_eq!(acp.tool_calls_streamed[0].id, "call_001");
+    assert_eq!(acp.tool_results_streamed[0].id, "call_001");
+    assert!(!acp.tool_results_streamed[0].is_error);
+
     // Verify two LLM calls were made (tool call + final text)
     assert!(llm.responses.lock().unwrap().is_empty());
 
@@ -235,6 +285,40 @@ async fn test_tool_call_round_trip() {
     assert_eq!(tool_msgs.len(), 1);
     let tool_output = tool_msgs[0].content.as_ref().unwrap().as_text().unwrap();
     assert!(tool_output.contains("hi"), "Tool output: {}", tool_output);
+}
+
+#[tokio::test]
+async fn test_tool_call_failure_streams_is_error_true() {
+    // `_unknown_tool_` is not registered → ToolRegistry::execute errors
+    // → stream_tool_result should fire with is_error = true.
+    let llm = MockLlm::new(vec![
+        make_tool_call_response("_unknown_tool_", r#"{}"#),
+        make_text_response("sorry", StopReason::Stop),
+    ]);
+    let mut acp = MockAcp::new(true);
+    let mut registry = ToolRegistry::new();
+    let mut messages = vec![user_msg("call the unknown tool")];
+
+    run(
+        &mut acp,
+        &llm,
+        &mut registry,
+        &mut messages,
+        &default_config(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(acp.tool_calls_streamed.len(), 1);
+    assert_eq!(acp.tool_results_streamed.len(), 1);
+    assert!(
+        acp.tool_results_streamed[0].is_error,
+        "tool_result.is_error should be true on failure"
+    );
+    assert_eq!(
+        acp.tool_calls_streamed[0].id, acp.tool_results_streamed[0].id,
+        "call and result ids must match"
+    );
 }
 
 #[tokio::test]

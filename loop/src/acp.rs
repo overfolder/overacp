@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use overacp_protocol::messages::{
     Activity, Message as ProtoMessage, QuotaUpdateRequest, Role as ProtoRole, SessionMessageParams,
-    TextDelta, TurnEndParams, Usage as ProtoUsage,
+    TextDelta, ToolCallNotification, ToolResultNotification, TurnEndParams, Usage as ProtoUsage,
 };
 use overacp_protocol::methods;
 use serde::{Deserialize, Serialize};
@@ -184,6 +184,27 @@ impl<R: Read, W: Write> AcpService for AcpClient<R, W> {
             data: Value::String(activity.to_string()),
         };
         self.send_notification(methods::STREAM_ACTIVITY, Some(serde_json::to_value(params)?))
+    }
+
+    fn stream_tool_call(&mut self, id: &str, name: &str, arguments: &Value) -> Result<()> {
+        let params = ToolCallNotification {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.clone(),
+        };
+        self.send_notification(methods::STREAM_TOOL_CALL, Some(serde_json::to_value(params)?))
+    }
+
+    fn stream_tool_result(&mut self, id: &str, content: &Value, is_error: bool) -> Result<()> {
+        let params = ToolResultNotification {
+            id: id.to_string(),
+            content: content.clone(),
+            is_error,
+        };
+        self.send_notification(
+            methods::STREAM_TOOL_RESULT,
+            Some(serde_json::to_value(params)?),
+        )
     }
 
     fn turn_end(&mut self, messages: &[Message], usage: &Usage) -> Result<()> {

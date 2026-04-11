@@ -60,7 +60,7 @@ crate landed. All items block calling the loop "protocol-conformant".
       `poll/newMessages` method has been removed from the protocol.
 - [x] Loop emits `turn/end` (fire-and-forget notification) at the
       end of each turn instead of the old `turn/save` request.
-- [ ] Loop emits `stream/toolCall` and `stream/toolResult`
+- [x] Loop emits `stream/toolCall` and `stream/toolResult`
       notifications around every tool invocation.
 - [ ] **Tool sources unified into one registry**, ordered:
       built-in → supervisor-injected → ACP-tunnelled → MCP-direct.
