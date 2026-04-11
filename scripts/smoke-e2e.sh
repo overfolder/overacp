@@ -215,7 +215,9 @@ INPUT_TOKENS=$(echo "$TURN_END_JSON" | jq -r '.params.usage.input_tokens // 0')
 if [ "$INPUT_TOKENS" -gt 0 ]; then
   echo "usage reported ($INPUT_TOKENS input tokens)"
 else
-  echo "WARNING: input_tokens was $INPUT_TOKENS — the LLM may not have reported usage"
+  echo "FAIL: input_tokens was $INPUT_TOKENS — the LLM did not report usage"
+  echo "— turn/end frame —"; echo "$TURN_END_JSON" | jq
+  exit 1
 fi
 
 # ── done ─────────────────────────────────────────────────────────
