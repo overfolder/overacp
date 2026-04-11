@@ -26,9 +26,31 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
 use reqwest::Client;
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
+
+/// RAII guard that ensures a spawned child process is killed if
+/// the test panics before reaching the explicit cleanup. Without
+/// this, any assertion failure would orphan the supervisor + its
+/// overloop grandchild — `tokio::process::Child` does NOT kill on
+/// drop, it only closes its handle.
+struct KillOnDrop(Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        // `start_kill` is the synchronous signal-send method — safe
+        // to call from a sync Drop without needing the runtime.
+        let _ = self.0.start_kill();
+    }
+}
+
+impl KillOnDrop {
+    async fn kill_and_wait(mut self) {
+        let _ = self.0.kill().await;
+        let _ = self.0.wait().await;
+    }
+}
 
 use common::{
     cargo_debug_bin, mint_admin, mint_agent, push_body, spawn_broker, spawn_mock_llm,
@@ -91,8 +113,9 @@ async fn full_stack_turn_end_over_real_tunnel() {
     );
     let mut sse_stream = sse_resp.bytes_stream();
 
-    // 6. Launch overacp-agent as a real subprocess.
-    let mut supervisor = Command::new(&agent_bin)
+    // 6. Launch overacp-agent as a real subprocess, wrapped in a
+    //    KillOnDrop guard so a panicking assertion still cleans up.
+    let supervisor = Command::new(&agent_bin)
         .env("OVERACP_TOKEN", &agent_jwt)
         .env("OVERACP_SERVER_URL", &base_url)
         .env("OVERACP_WORKSPACE", workspace.path())
@@ -105,13 +128,11 @@ async fn full_stack_turn_end_over_real_tunnel() {
         .stderr(Stdio::inherit())
         .spawn()
         .expect("spawn overacp-agent");
+    let supervisor = KillOnDrop(supervisor);
 
     // 7. Poll GET /agents/{id} until the tunnel is connected.
     let connected = wait_for_connected(&client, &base_url, agent_id, &admin_jwt).await;
-    if !connected {
-        let _ = supervisor.kill().await;
-        panic!("tunnel never came up within 10s");
-    }
+    assert!(connected, "tunnel never came up within 10s");
 
     // 8. Push a user message.
     let push_resp = client
@@ -128,10 +149,12 @@ async fn full_stack_turn_end_over_real_tunnel() {
     );
 
     // 9. Drain the SSE stream until a turn/end frame arrives.
-    let frame = timeout(Duration::from_secs(30), find_turn_end(&mut sse_stream))
-        .await
-        .expect("timeout waiting for turn/end")
-        .expect("SSE stream closed without turn/end");
+    let frame = match timeout(Duration::from_secs(30), find_turn_end(&mut sse_stream)).await {
+        Ok(Ok(Some(v))) => v,
+        Ok(Ok(None)) => panic!("SSE stream closed without turn/end"),
+        Ok(Err(e)) => panic!("error draining SSE stream: {e}"),
+        Err(_) => panic!("timeout waiting for turn/end after 30s"),
+    };
 
     // 10. Assert the turn/end frame carries nonzero usage + the
     //     assistant's HELLO message.
@@ -158,10 +181,9 @@ async fn full_stack_turn_end_over_real_tunnel() {
         "expected an assistant message containing HELLO, got: {messages:?}"
     );
 
-    // Cleanup: kill the supervisor. The broker handle drops with the
-    // test scope.
-    let _ = supervisor.kill().await;
-    let _ = supervisor.wait().await;
+    // Cleanup: kill the supervisor cleanly. Panics before this point
+    // still trigger `KillOnDrop::drop` above.
+    supervisor.kill_and_wait().await;
 }
 
 /// Poll `GET /agents/{id}` until the tunnel is connected. Gives up
@@ -196,25 +218,40 @@ async fn wait_for_connected(
 /// whose `method` field is `"turn/end"`. The SSE protocol prefixes
 /// each frame with `data: `; we concatenate chunks and match on
 /// line boundaries.
-async fn find_turn_end<S>(stream: &mut S) -> Option<serde_json::Value>
+///
+/// Transport errors (reqwest) are surfaced to the caller rather
+/// than silently turned into `None` — otherwise a broken SSE
+/// connection looks identical to a graceful close and the test
+/// panic message becomes useless. UTF-8 decoding errors on a single
+/// chunk are logged via `eprintln!` and skipped, since the SSE
+/// body is always text/plain.
+async fn find_turn_end<S>(
+    stream: &mut S,
+) -> Result<Option<serde_json::Value>, reqwest::Error>
 where
     S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
 {
     let mut buf = String::new();
     while let Some(chunk) = stream.next().await {
-        let chunk: Bytes = chunk.ok()?;
-        buf.push_str(str::from_utf8(&chunk).ok()?);
+        let chunk: Bytes = chunk?;
+        match str::from_utf8(&chunk) {
+            Ok(s) => buf.push_str(s),
+            Err(e) => {
+                eprintln!("find_turn_end: skipping non-UTF-8 chunk: {e}");
+                continue;
+            }
+        }
         while let Some(nl) = buf.find('\n') {
             let line = buf[..nl].trim_end().to_string();
             buf.drain(..=nl);
             if let Some(json_str) = line.strip_prefix("data: ") {
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
                     if value["method"] == "turn/end" {
-                        return Some(value);
+                        return Ok(Some(value));
                     }
                 }
             }
         }
     }
-    None
+    Ok(None)
 }
