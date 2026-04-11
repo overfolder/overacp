@@ -14,24 +14,25 @@
 
 use anyhow::Result;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::process::{ChildStdin, ChildStdout};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMessage};
 use tracing::{debug, info};
 
-use crate::tunnel::{WsRead, WsSink};
-
-/// Run the bidirectional bridge until either side closes.
-pub async fn run(
-    ws_read: WsRead,
-    ws_sink: WsSink,
-    child_stdin: ChildStdin,
-    child_stdout: BufReader<ChildStdout>,
-) -> BridgeExit {
-    let mut ws_read = ws_read;
-    let mut ws_sink = ws_sink;
-    let mut child_stdin = child_stdin;
-    let mut child_stdout = child_stdout;
+/// Run the bidirectional bridge until either side closes. Generic
+/// over the underlying stream/sink/read/write types so the entire
+/// coordination loop is unit-testable with in-memory pipes.
+pub async fn run<WR, WS, CI, CO>(
+    mut ws_read: WR,
+    mut ws_sink: WS,
+    mut child_stdin: CI,
+    mut child_stdout: CO,
+) -> BridgeExit
+where
+    WR: Stream<Item = Result<WsMessage, WsError>> + Unpin,
+    WS: Sink<WsMessage, Error = WsError> + Unpin,
+    CI: AsyncWrite + Unpin,
+    CO: AsyncBufRead + Unpin,
+{
     tokio::select! {
         reason = ws_to_stdin(&mut ws_read, &mut child_stdin) => {
             info!("ws→stdin closed: {reason:?}");
@@ -129,7 +130,7 @@ mod tests {
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
     use std::task::{Context, Poll};
-    use tokio::io::BufReader;
+    use tokio::io::{duplex, empty, BufReader};
 
     // ── Helpers ─────────────────────────────────────────────────
 
@@ -263,5 +264,70 @@ mod tests {
             BridgeExit::Error(msg) => assert!(msg.to_lowercase().contains("ws write")),
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    // ── run() — tokio::select! coordination ────────────────────
+
+    #[tokio::test]
+    async fn run_ends_when_ws_closes_first() {
+        // WS returns an immediate Close frame; stdout is a pipe that
+        // blocks forever. run() must pick the ws branch and return
+        // TunnelClosed.
+        let ws_frames: Vec<Result<WsMessage, WsError>> = vec![Ok(WsMessage::Close(None))];
+        let ws_read = stream::iter(ws_frames);
+        let ws_sink = VecSink::default();
+        let stdin: Vec<u8> = Vec::new();
+        // `empty()` is an AsyncRead that is immediately
+        // EOF — but we need AsyncBufRead. BufReader wraps it.
+        let stdout = BufReader::new(empty());
+
+        // empty() hits EOF immediately which would win the race. To
+        // force the ws branch to win, use pending() from tokio::io.
+        // tokio::io::empty is immediate EOF; for a "hangs forever"
+        // reader we wrap a never-ready stream. Simplest: a pipe
+        // whose write end is held by this scope and never written.
+        let _ = stdout;
+        let (pipe_reader, _pipe_writer) = duplex(64);
+        let stdout = BufReader::new(pipe_reader);
+
+        let exit = run(ws_read, ws_sink, stdin, stdout).await;
+        assert_eq!(exit, BridgeExit::TunnelClosed);
+    }
+
+    #[tokio::test]
+    async fn run_ends_when_child_stdout_hits_eof() {
+        // WS stream is a pending stream — never yields. Child
+        // stdout is an empty buffer that EOFs immediately.
+        let ws_read = stream::pending::<Result<WsMessage, WsError>>();
+        let ws_sink = VecSink::default();
+        let stdin: Vec<u8> = Vec::new();
+        let stdout = BufReader::new(empty());
+
+        let exit = run(ws_read, ws_sink, stdin, stdout).await;
+        assert_eq!(exit, BridgeExit::ProcessExited);
+    }
+
+    #[tokio::test]
+    async fn run_forwards_text_frame_to_stdin_before_ws_close() {
+        // One text frame + an immediate Close. `stdin` is a
+        // Vec<u8> writer that captures what the bridge wrote.
+        // Stdout is a hanging pipe so the ws branch always wins.
+        let ws_frames: Vec<Result<WsMessage, WsError>> = vec![
+            Ok(WsMessage::Text("from-server\n".into())),
+            Ok(WsMessage::Close(None)),
+        ];
+        let ws_read = stream::iter(ws_frames);
+        let ws_sink = VecSink::default();
+
+        let mut stdin: Vec<u8> = Vec::new();
+        let (pipe_reader, _pipe_writer) = duplex(64);
+        let stdout = BufReader::new(pipe_reader);
+
+        let exit = run(ws_read, ws_sink, &mut stdin, stdout).await;
+        assert_eq!(exit, BridgeExit::TunnelClosed);
+        assert_eq!(
+            String::from_utf8(stdin).unwrap(),
+            "from-server\n"
+        );
     }
 }

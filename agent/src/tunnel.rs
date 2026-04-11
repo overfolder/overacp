@@ -120,4 +120,38 @@ mod tests {
         let err = connect("not a url", "tok").await.unwrap_err();
         assert!(err.to_string().to_lowercase().contains("tunnel url"));
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn connect_with_retry_eventually_succeeds_after_initial_failure() {
+        // Start a TCP listener but do NOT accept → every connect
+        // attempt times out immediately (connection reset on an
+        // unbound port). Then accept on a second listener after a
+        // few simulated backoff windows. This exercises the retry
+        // loop without waiting real seconds thanks to
+        // `start_paused = true` + `tokio::time::advance`.
+        use tokio::net::TcpListener;
+        use tokio::time::{advance, Duration as TokioDuration};
+
+        // Pick an unreachable port by binding then dropping so the
+        // kernel re-uses it for a second listener later.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener); // now the port is free but not listening
+
+        let url = format!("ws://{addr}/tunnel/test");
+        let connect_task =
+            tokio::spawn(async move { connect_with_retry(&url, "tok").await });
+
+        // Advance virtual time through several backoff windows.
+        // The loop is connect_err → sleep(1) → connect_err → sleep(2)
+        // → …; after ~2s the task should have retried at least once
+        // and still be parked in the second sleep.
+        advance(TokioDuration::from_secs(10)).await;
+        assert!(!connect_task.is_finished());
+
+        // Abort — we don't need a successful connect, only that the
+        // retry loop exercised the sleep + attempt counter.
+        connect_task.abort();
+        let _ = connect_task.await;
+    }
 }

@@ -421,3 +421,135 @@ async fn test_content_length_stop() {
         acp.text_deltas
     );
 }
+
+#[tokio::test]
+async fn test_content_filter_stop() {
+    let llm = MockLlm::new(vec![make_text_response(
+        "sorry",
+        StopReason::ContentFilter,
+    )]);
+    let mut acp = MockAcp::new(true);
+    let mut registry = ToolRegistry::new();
+    let mut messages = vec![user_msg("Hi")];
+
+    run(
+        &mut acp,
+        &llm,
+        &mut registry,
+        &mut messages,
+        &default_config(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        acp.text_deltas
+            .iter()
+            .any(|d| d.contains("[Content filtered]")),
+        "Expected content-filter message: {:?}",
+        acp.text_deltas
+    );
+}
+
+#[tokio::test]
+async fn test_wind_down_injects_system_message_when_iterations_remaining_equals_5() {
+    // Config with max_iterations = 5 means the FIRST iteration has
+    // `remaining == 5`, so the wind-down branch fires immediately.
+    // The loop then runs the LLM call and the natural-stop branch
+    // exits after one turn, leaving the wind-down system message
+    // in `messages`.
+    let llm = MockLlm::new(vec![make_text_response("ok", StopReason::Stop)]);
+    let mut acp = MockAcp::new(true);
+    let mut registry = ToolRegistry::new();
+    let mut messages = vec![user_msg("hi")];
+
+    let config = LoopConfig {
+        max_iterations: 5,
+        timeout: Duration::from_secs(30),
+    };
+
+    run(&mut acp, &llm, &mut registry, &mut messages, &config)
+        .await
+        .unwrap();
+
+    let wind_down = messages.iter().any(|m| {
+        m.role == Role::System
+            && m.content
+                .as_ref()
+                .and_then(|c| c.as_text())
+                .map(|t| t.contains("iterations remaining"))
+                .unwrap_or(false)
+    });
+    assert!(
+        wind_down,
+        "wind-down system message not injected; messages = {messages:#?}"
+    );
+}
+
+#[tokio::test]
+async fn test_silence_nudge_injected_after_three_silent_turns() {
+    // Three empty-text, no-tool responses in a row trip `silent_turns
+    // >= 3`; the 4th iteration injects the nudge. Add a final real
+    // response so the loop terminates.
+    fn empty_assistant_response() -> Result<StreamedResponse> {
+        Ok(StreamedResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            // ToolCalls → continue through the tool-call branch,
+            // but with no tool_calls present so the loop falls
+            // through to the stop-reason match and sees `None` →
+            // which would normally break. Use an unknown
+            // finish_reason (Length-ish) that still counts as
+            // "silent" to keep iterating.
+            //
+            // Actually simpler: emit finish_reason ToolCalls so the
+            // loop `continue`s without breaking.
+            finish_reason: Some(StopReason::ToolCalls),
+            usage: Some(Usage {
+                prompt_tokens: 1,
+                completion_tokens: 0,
+                total_tokens: 1,
+            }),
+        })
+    }
+
+    let llm = MockLlm::new(vec![
+        empty_assistant_response(),
+        empty_assistant_response(),
+        empty_assistant_response(),
+        // 4th iteration: after silence_nudge triggers and resets,
+        // emit a real text response to let the loop exit cleanly.
+        make_text_response("done", StopReason::Stop),
+    ]);
+    let mut acp = MockAcp::new(true);
+    let mut registry = ToolRegistry::new();
+    let mut messages = vec![user_msg("go")];
+
+    run(
+        &mut acp,
+        &llm,
+        &mut registry,
+        &mut messages,
+        &default_config(),
+    )
+    .await
+    .unwrap();
+
+    // The nudge is a System message with the SILENCE_NUDGE text.
+    let nudge = messages.iter().any(|m| {
+        m.role == Role::System
+            && m.content
+                .as_ref()
+                .and_then(|c| c.as_text())
+                .map(|t| t.contains("haven't produced any output"))
+                .unwrap_or(false)
+    });
+    assert!(
+        nudge,
+        "silence nudge not injected; messages = {messages:#?}"
+    );
+}
