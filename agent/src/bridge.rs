@@ -310,6 +310,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ws_to_stdin_forwards_multimodal_json_verbatim() {
+        // Multimodal content blocks (image_url, unknown types)
+        // must pass through the bridge unchanged.
+        let multimodal = r#"{"jsonrpc":"2.0","method":"session/message","params":{"role":"user","content":[{"type":"text","text":"hi"},{"type":"image_url","image_url":{"url":"data:image/png;base64,abc"}},{"type":"hologram","mesh":"xyz"}]}}"#;
+        let frames = vec![text(multimodal)];
+        let mut src = stream::iter(frames);
+        let mut dst: Vec<u8> = Vec::new();
+        ws_to_stdin(&mut src, &mut dst).await;
+        let out = String::from_utf8(dst).unwrap();
+        // The bridge preserves the frame verbatim (plus trailing newline)
+        assert_eq!(out.trim(), multimodal);
+        // Verify the JSON is valid and content blocks survived
+        let parsed: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        let blocks = parsed["params"]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[1]["type"], "image_url");
+        assert_eq!(blocks[2]["type"], "hologram");
+    }
+
+    #[tokio::test]
+    async fn stdout_to_ws_forwards_multimodal_turn_end_verbatim() {
+        // Multimodal turn/end from child agent must pass through unchanged.
+        let turn_end = r#"{"jsonrpc":"2.0","method":"turn/end","params":{"messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,abc"}}]},{"role":"assistant","content":"A pixel."}],"usage":{"input_tokens":100,"output_tokens":10}}}"#;
+        let input = format!("{turn_end}\n");
+        let mut reader = BufReader::new(input.as_bytes());
+        let mut sink = VecSink::default();
+        stdout_to_ws(&mut reader, &mut sink).await;
+        let sent = sink.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        match &sent[0] {
+            WsMessage::Text(t) => assert_eq!(t.to_string(), turn_end),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn run_forwards_text_frame_to_stdin_before_ws_close() {
         // One text frame + an immediate Close. `stdin` is a
         // Vec<u8> writer that captures what the bridge wrote.

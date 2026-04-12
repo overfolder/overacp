@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::llm::{FunctionDef, ToolDefinition};
+use crate::llm::{FunctionDef, ToolContent, ToolDefinition};
 use crate::mcp::McpClient;
 
-use super::ToolResult;
+use super::{ToolOutput, ToolResult};
 
 type ToolFn = fn(Value) -> Pin<Box<dyn Future<Output = ToolResult> + Send>>;
 
@@ -140,17 +140,33 @@ impl ToolRegistry {
     }
 
     /// Execute a tool by name.
-    pub async fn execute(&mut self, name: &str, arguments: Value) -> ToolResult {
+    pub async fn execute(&mut self, name: &str, arguments: Value) -> Result<ToolOutput, String> {
         if let Some(func) = self.builtins.get(name) {
-            return func(arguments).await;
+            return func(arguments).await.map(ToolOutput::Text);
         }
 
         if let Some((client_idx, _)) = self.mcp_tools.get(name) {
             let idx = *client_idx;
-            return self.mcp_clients[idx]
+            let contents = self.mcp_clients[idx]
                 .call_tool(name, arguments)
                 .await
-                .map_err(|e| e.to_string());
+                .map_err(|e| e.to_string())?;
+
+            // If all content is text, collapse to a single string for
+            // simpler downstream handling.
+            if contents.iter().all(|c| matches!(c, ToolContent::Text(_))) {
+                let text = contents
+                    .into_iter()
+                    .filter_map(|c| match c {
+                        ToolContent::Text(t) => Some(t),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return Ok(ToolOutput::Text(text));
+            }
+
+            return Ok(ToolOutput::Blocks(contents));
         }
 
         Err(format!("unknown tool: {}", name))

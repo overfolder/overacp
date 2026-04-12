@@ -54,7 +54,11 @@ pub enum McpContent {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "image")]
-    Image { data: String, mime_type: String },
+    Image {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
     #[serde(rename = "resource")]
     Resource { resource: Value },
 }
@@ -83,6 +87,23 @@ mod tests {
             mime_type: "image/png".into(),
         };
         assert!(img.as_text().is_none());
+    }
+
+    #[test]
+    fn test_mcp_image_content_deser_camel_case() {
+        let val = json!({
+            "type": "image",
+            "data": "iVBORw0KGgo=",
+            "mimeType": "image/png"
+        });
+        let content: McpContent = serde_json::from_value(val).unwrap();
+        match content {
+            McpContent::Image { data, mime_type } => {
+                assert_eq!(data, "iVBORw0KGgo=");
+                assert_eq!(mime_type, "image/png");
+            }
+            _ => panic!("expected Image"),
+        }
     }
 
     #[test]

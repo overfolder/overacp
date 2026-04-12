@@ -1,3 +1,4 @@
+use overloop::llm::ToolContent;
 use overloop::mcp::McpClient;
 use serde_json::json;
 use std::collections::VecDeque;
@@ -111,7 +112,77 @@ async fn test_call_tool_success() {
         .await
         .unwrap();
 
-    assert_eq!(result, "Tool output here");
+    assert_eq!(result.len(), 1);
+    assert!(matches!(&result[0], ToolContent::Text(t) if t == "Tool output here"));
+}
+
+#[tokio::test]
+async fn test_call_tool_multimodal() {
+    let server = MockServer::start().await;
+
+    let tool_result_response = ResponseTemplate::new(200).set_body_json(json!({
+        "id": 2,
+        "result": {
+            "content": [
+                { "type": "text", "text": "Here is the screenshot:" },
+                { "type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png" }
+            ],
+            "isError": false
+        }
+    }));
+
+    let responder = McpResponder {
+        responses: Mutex::new(vec![init_response(), tool_result_response].into()),
+    };
+
+    Mock::given(method("POST"))
+        .respond_with(responder)
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let mut client = McpClient::new(&server.uri());
+    client.initialize().await.unwrap();
+    let result = client.call_tool("screenshot", json!({})).await.unwrap();
+
+    assert_eq!(result.len(), 2);
+    assert!(matches!(&result[0], ToolContent::Text(t) if t == "Here is the screenshot:"));
+    assert!(
+        matches!(&result[1], ToolContent::ImageBase64 { data, mime_type }
+            if data == "iVBORw0KGgo=" && mime_type == "image/png")
+    );
+}
+
+#[tokio::test]
+async fn test_call_tool_resource_converted_to_text() {
+    let server = MockServer::start().await;
+
+    let tool_result_response = ResponseTemplate::new(200).set_body_json(json!({
+        "id": 2,
+        "result": {
+            "content": [
+                { "type": "resource", "resource": { "uri": "file:///etc/hosts", "text": "localhost" } }
+            ],
+            "isError": false
+        }
+    }));
+
+    let responder = McpResponder {
+        responses: Mutex::new(vec![init_response(), tool_result_response].into()),
+    };
+
+    Mock::given(method("POST"))
+        .respond_with(responder)
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let mut client = McpClient::new(&server.uri());
+    client.initialize().await.unwrap();
+    let result = client.call_tool("read_resource", json!({})).await.unwrap();
+
+    assert_eq!(result.len(), 1);
+    assert!(matches!(&result[0], ToolContent::Text(t) if t.contains("localhost")));
 }
 
 #[tokio::test]

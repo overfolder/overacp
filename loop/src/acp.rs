@@ -474,6 +474,124 @@ mod tests {
     }
 
     #[test]
+    fn next_push_parses_anthropic_image_blocks() {
+        let input = notification(
+            "session/message",
+            json!({
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "what's this?" },
+                    { "type": "image", "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw0KGgo="
+                    }}
+                ]
+            }),
+        );
+        let mut acp = mock_acp(&input);
+        let msg = match acp.next_push().unwrap() {
+            NextPush::Message(m) => m,
+            NextPush::Cancel => panic!("expected Message"),
+        };
+        match msg.content.as_ref().expect("content") {
+            Content::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2);
+                assert!(blocks[0].as_text().is_some());
+                assert!(blocks[1].is_media());
+            }
+            Content::Text(_) => panic!("expected Blocks"),
+        }
+    }
+
+    #[test]
+    fn next_push_parses_input_audio_blocks() {
+        let input = notification(
+            "session/message",
+            json!({
+                "role": "user",
+                "content": [
+                    { "type": "input_audio", "input_audio": { "data": "base64audio", "format": "wav" } }
+                ]
+            }),
+        );
+        let mut acp = mock_acp(&input);
+        let msg = match acp.next_push().unwrap() {
+            NextPush::Message(m) => m,
+            NextPush::Cancel => panic!("expected Message"),
+        };
+        match msg.content.as_ref().expect("content") {
+            Content::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 1);
+                assert!(blocks[0].is_media());
+            }
+            Content::Text(_) => panic!("expected Blocks"),
+        }
+    }
+
+    #[test]
+    fn next_push_handles_unknown_block_types_gracefully() {
+        let input = notification(
+            "session/message",
+            json!({
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "hello" },
+                    { "type": "hologram_3d", "mesh": "data:model/gltf;base64,abc" }
+                ]
+            }),
+        );
+        let mut acp = mock_acp(&input);
+        let msg = match acp.next_push().unwrap() {
+            NextPush::Message(m) => m,
+            NextPush::Cancel => panic!("expected Message"),
+        };
+        match msg.content.as_ref().expect("content") {
+            Content::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2);
+                assert_eq!(blocks[0].as_text(), Some("hello"));
+                // Unknown block is absorbed without error
+                assert!(!blocks[1].is_media());
+                assert!(blocks[1].as_text().is_none());
+            }
+            Content::Text(_) => panic!("expected Blocks"),
+        }
+    }
+
+    #[test]
+    fn turn_end_roundtrips_anthropic_image_blocks() {
+        use crate::llm::{ContentBlock, TypedBlock};
+        let mut acp = mock_acp("");
+        let messages = vec![Message {
+            role: Role::User,
+            content: Some(Content::Blocks(vec![
+                TypedBlock::Known(ContentBlock::Text {
+                    text: "describe".into(),
+                }),
+                TypedBlock::Known(ContentBlock::Image {
+                    source: json!({"type": "base64", "media_type": "image/png", "data": "abc"}),
+                }),
+            ])),
+            tool_calls: None,
+            tool_call_id: None,
+        }];
+        let usage = Usage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+        };
+        acp.turn_end(&messages, &usage).unwrap();
+
+        let out = String::from_utf8(acp.writer.clone()).unwrap();
+        let parsed: Value = serde_json::from_str(out.trim()).unwrap();
+        let content = &parsed["params"]["messages"][0]["content"];
+        assert_eq!(content.as_array().unwrap().len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+    }
+
+    #[test]
     fn next_push_rejects_unknown_role() {
         // An unknown role is caught at the `SessionMessageParams`
         // deserialization boundary by the protocol crate's typed
@@ -493,6 +611,41 @@ mod tests {
         let mut acp = mock_acp("");
         let err = acp.next_push().unwrap_err();
         assert!(err.to_string().contains("stdin closed"));
+    }
+
+    #[test]
+    fn turn_end_roundtrips_multimodal_content_blocks() {
+        use crate::llm::{ContentBlock, TypedBlock};
+        let mut acp = mock_acp("");
+        let messages = vec![Message {
+            role: Role::User,
+            content: Some(Content::Blocks(vec![
+                TypedBlock::Known(ContentBlock::Text {
+                    text: "what's this?".into(),
+                }),
+                TypedBlock::Known(ContentBlock::ImageUrl {
+                    image_url: json!({"url": "data:image/png;base64,abc"}),
+                }),
+            ])),
+            tool_calls: None,
+            tool_call_id: None,
+        }];
+        let usage = Usage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+        };
+        acp.turn_end(&messages, &usage).unwrap();
+
+        let out = String::from_utf8(acp.writer.clone()).unwrap();
+        let parsed: Value = serde_json::from_str(out.trim()).unwrap();
+        let content = &parsed["params"]["messages"][0]["content"];
+        assert!(content.is_array());
+        assert_eq!(content.as_array().unwrap().len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "what's this?");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,abc");
     }
 
     #[test]

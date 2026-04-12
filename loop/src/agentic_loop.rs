@@ -4,8 +4,10 @@ use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
 use crate::compaction::{compact_messages, estimate_tokens};
-use crate::llm::{Content, Message, Role, StopReason, Usage};
-use crate::tools::ToolRegistry;
+use crate::llm::{
+    Content, ContentBlock, Message, Role, StopReason, ToolContent, TypedBlock, Usage,
+};
+use crate::tools::{ToolOutput, ToolRegistry};
 use crate::traits::{AcpService, LlmService};
 
 const CONTEXT_WINDOW: usize = 128_000;
@@ -157,15 +159,16 @@ pub async fn run(
                 let result = registry.execute(name, args).await;
 
                 let (content, is_error) = match result {
-                    Ok(output) => (output, false),
-                    Err(err) => (format!("Error: {}", err), true),
+                    Ok(output) => (tool_output_to_content(output), false),
+                    Err(err) => (Content::Text(format!("Error: {}", err)), true),
                 };
 
-                let _ = acp.stream_tool_result(&tc.id, &Value::String(content.clone()), is_error);
+                let content_value = serde_json::to_value(&content).unwrap_or(Value::Null);
+                let _ = acp.stream_tool_result(&tc.id, &content_value, is_error);
 
                 messages.push(Message {
                     role: Role::Tool,
-                    content: Some(Content::Text(content)),
+                    content: Some(content),
                     tool_calls: None,
                     tool_call_id: Some(tc.id.clone()),
                 });
@@ -212,5 +215,95 @@ fn system_msg(text: &str) -> Message {
         content: Some(Content::Text(text.to_string())),
         tool_calls: None,
         tool_call_id: None,
+    }
+}
+
+/// Convert a [`ToolOutput`] into the LLM-facing [`Content`] shape.
+/// Base64 images are re-encoded as OpenAI-compatible `image_url`
+/// blocks with `data:` URIs so they work with OpenRouter.
+fn tool_output_to_content(output: ToolOutput) -> Content {
+    match output {
+        ToolOutput::Text(s) => Content::Text(s),
+        ToolOutput::Blocks(blocks) => {
+            let content_blocks: Vec<TypedBlock> = blocks
+                .into_iter()
+                .map(|b| match b {
+                    ToolContent::Text(t) => TypedBlock::Known(ContentBlock::Text { text: t }),
+                    ToolContent::ImageBase64 { data, mime_type } => {
+                        TypedBlock::Known(ContentBlock::ImageUrl {
+                            image_url: serde_json::json!({
+                                "url": format!("data:{};base64,{}", mime_type, data)
+                            }),
+                        })
+                    }
+                })
+                .collect();
+            Content::Blocks(content_blocks)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_output_text_converts_to_content_text() {
+        let output = ToolOutput::Text("hello".into());
+        let content = tool_output_to_content(output);
+        assert!(matches!(content, Content::Text(ref s) if s == "hello"));
+    }
+
+    #[test]
+    fn tool_output_blocks_text_only() {
+        let output = ToolOutput::Blocks(vec![
+            ToolContent::Text("line 1".into()),
+            ToolContent::Text("line 2".into()),
+        ]);
+        let content = tool_output_to_content(output);
+        match content {
+            Content::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2);
+                assert_eq!(blocks[0].as_text(), Some("line 1"));
+                assert_eq!(blocks[1].as_text(), Some("line 2"));
+            }
+            _ => panic!("expected Blocks"),
+        }
+    }
+
+    #[test]
+    fn tool_output_blocks_with_image_produces_data_uri() {
+        let output = ToolOutput::Blocks(vec![
+            ToolContent::Text("screenshot:".into()),
+            ToolContent::ImageBase64 {
+                data: "abc123".into(),
+                mime_type: "image/png".into(),
+            },
+        ]);
+        let content = tool_output_to_content(output);
+        match content {
+            Content::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2);
+                assert_eq!(blocks[0].as_text(), Some("screenshot:"));
+                match &blocks[1] {
+                    TypedBlock::Known(ContentBlock::ImageUrl { image_url }) => {
+                        let url = image_url["url"].as_str().unwrap();
+                        assert_eq!(url, "data:image/png;base64,abc123");
+                    }
+                    other => panic!("expected Known(ImageUrl), got {:?}", other),
+                }
+            }
+            _ => panic!("expected Blocks"),
+        }
+    }
+
+    #[test]
+    fn tool_output_empty_blocks() {
+        let output = ToolOutput::Blocks(vec![]);
+        let content = tool_output_to_content(output);
+        match content {
+            Content::Blocks(blocks) => assert!(blocks.is_empty()),
+            _ => panic!("expected empty Blocks"),
+        }
     }
 }

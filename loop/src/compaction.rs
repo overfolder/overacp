@@ -82,7 +82,7 @@ async fn summarize(llm: &(impl LlmService + ?Sized), messages: &[Message]) -> Re
             };
             m.content
                 .as_ref()
-                .and_then(|c| c.as_text())
+                .and_then(|c| c.extract_text())
                 .map(|text| format!("{}: {}", role, text))
         })
         .collect::<Vec<_>>()
@@ -118,19 +118,21 @@ async fn summarize(llm: &(impl LlmService + ?Sized), messages: &[Message]) -> Re
         .ok_or_else(|| anyhow::anyhow!("compaction returned empty response"))
 }
 
-/// Estimate token count from messages (rough: 1 token ≈ 4 chars).
+/// Estimate token count from messages (rough: 1 token ≈ 4 chars for
+/// text, flat 765 per image).
 pub fn estimate_tokens(messages: &[Message]) -> usize {
     messages
         .iter()
         .filter_map(|m| m.content.as_ref())
-        .filter_map(|c| c.as_text())
-        .map(|t| t.len() / 4)
+        .map(|c| c.estimate_tokens())
         .sum()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::{ContentBlock, TypedBlock};
+    use serde_json::json;
 
     #[test]
     fn test_estimate_tokens_empty() {
@@ -157,5 +159,24 @@ mod tests {
             tool_call_id: None,
         };
         assert_eq!(estimate_tokens(&[msg]), 0);
+    }
+
+    #[test]
+    fn test_estimate_tokens_with_image_blocks() {
+        let msg = Message {
+            role: Role::User,
+            content: Some(Content::Blocks(vec![
+                TypedBlock::Known(ContentBlock::Text {
+                    text: "a".repeat(40),
+                }),
+                TypedBlock::Known(ContentBlock::ImageUrl {
+                    image_url: json!({"url": "https://x/y.png"}),
+                }),
+            ])),
+            tool_calls: None,
+            tool_call_id: None,
+        };
+        // 40/4 + 765 = 775
+        assert_eq!(estimate_tokens(&[msg]), 775);
     }
 }

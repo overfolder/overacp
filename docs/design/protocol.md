@@ -273,6 +273,24 @@ are kept as `serde_json::Value` so the protocol crate doesn't need to
 know about every multimodal content shape an LLM might emit. The
 reference agent (`overloop`) emits the OpenAI tool-call shape today.
 
+#### Known block types
+
+The reference agent recognises the following `type` discriminators
+when deserialising content blocks. Unrecognised types are absorbed
+by a catch-all variant and passed through without error.
+
+| `type`        | Payload shape                                          | Origin   |
+|---------------|--------------------------------------------------------|----------|
+| `text`        | `{ "text": "..." }`                                    | OpenAI   |
+| `image_url`   | `{ "image_url": { "url": "..." } }`                   | OpenAI   |
+| `image`       | `{ "source": { "type": "base64", "media_type": "...", "data": "..." } }` | Anthropic |
+| `input_audio` | `{ "input_audio": { "data": "...", "format": "..." } }` | OpenAI   |
+
+The protocol crate itself does **not** enumerate these types — its
+`Content::Blocks` variant carries `Vec<Value>`. The table above
+documents what `overloop` will understand natively; any block shape
+the operator sends will transit the broker untouched.
+
 ### 4.2 `Usage`
 
 ```jsonc

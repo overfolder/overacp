@@ -317,6 +317,11 @@ Server → agent (notification):
     "params": { "role": "user", "content": "hello" } }
 ```
 
+The `content` field is opaque — it may be a plain string or an array
+of multimodal content blocks (text, images, audio, etc.). Known block
+types are documented in
+[`docs/design/protocol.md` § 4.1](./docs/design/protocol.md).
+
 The agent appends this message to its in-memory history and starts
 a turn. There is no `poll/newMessages` on the wire. Mid-turn
 message delivery is handled internally by the supervisor, which
