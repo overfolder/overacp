@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tracing::debug;
 
-use crate::llm::{FunctionDef, ToolDefinition};
+use crate::llm::{FunctionDef, ToolContent, ToolDefinition};
 
 use super::{McpRequest, McpResponse, McpToolDef, McpToolResult};
 
@@ -66,8 +66,8 @@ impl McpClient {
         Ok(list.tools.into_iter().map(mcp_to_tool_definition).collect())
     }
 
-    /// Call an MCP tool by name.
-    pub async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<String> {
+    /// Call an MCP tool by name, preserving multimodal content.
+    pub async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Vec<ToolContent>> {
         let result = self
             .send(
                 "tools/call",
@@ -91,14 +91,20 @@ impl McpClient {
             anyhow::bail!("MCP tool error: {}", msg);
         }
 
-        let text = tool_result
+        Ok(tool_result
             .content
-            .iter()
-            .filter_map(|c| c.as_text())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        Ok(text)
+            .into_iter()
+            .map(|c| match c {
+                super::McpContent::Text { text } => ToolContent::Text(text),
+                super::McpContent::Image { data, mime_type } => {
+                    ToolContent::ImageBase64 { data, mime_type }
+                }
+                super::McpContent::Resource { resource } => ToolContent::Text(
+                    serde_json::to_string_pretty(&resource)
+                        .unwrap_or_else(|_| resource.to_string()),
+                ),
+            })
+            .collect())
     }
 
     async fn send(&mut self, method: &str, params: Option<Value>) -> Result<Value> {
