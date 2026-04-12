@@ -4,9 +4,9 @@ use std::fs;
 use tempfile::TempDir;
 
 #[test]
-fn test_has_5_builtins() {
+fn test_has_6_builtins() {
     let registry = ToolRegistry::new();
-    assert_eq!(registry.definitions().len(), 5);
+    assert_eq!(registry.definitions().len(), 6);
 }
 
 #[test]
@@ -16,7 +16,10 @@ fn test_builtin_names() {
     let mut names: Vec<String> = defs.iter().map(|d| d.function.name.clone()).collect();
     names.sort();
 
-    assert_eq!(names, vec!["exec", "glob", "grep", "read", "write"]);
+    assert_eq!(
+        names,
+        vec!["exec", "glob", "grep", "read", "read_media", "write"]
+    );
 }
 
 #[tokio::test]

@@ -1,4 +1,5 @@
-use anyhow::Result;
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use serde_json::Value;
 use std::path::Path;
 use std::process::Stdio;
@@ -8,7 +9,11 @@ use tokio::process::Command;
 use tokio::task::spawn_blocking;
 use tokio::time::timeout;
 
-use super::ToolResult;
+use crate::llm::ToolContent;
+
+use super::{ToolOutput, ToolResult};
+
+const MAX_MEDIA_BYTES: u64 = 20 * 1024 * 1024;
 
 pub async fn tool_read(args: Value) -> ToolResult {
     let path = arg_str(&args, "path")?;
@@ -30,7 +35,7 @@ pub async fn tool_read(args: Value) -> ToolResult {
         .collect::<Vec<_>>()
         .join("\n");
 
-    Ok(numbered)
+    Ok(ToolOutput::Text(numbered))
 }
 
 pub async fn tool_write(args: Value) -> ToolResult {
@@ -47,7 +52,11 @@ pub async fn tool_write(args: Value) -> ToolResult {
         .await
         .map_err(|e| format!("write {}: {}", path, e))?;
 
-    Ok(format!("Wrote {} bytes to {}", content.len(), path))
+    Ok(ToolOutput::Text(format!(
+        "Wrote {} bytes to {}",
+        content.len(),
+        path
+    )))
 }
 
 pub async fn tool_exec(args: Value) -> ToolResult {
@@ -83,7 +92,7 @@ pub async fn tool_exec(args: Value) -> ToolResult {
                 out.push_str(&stderr);
             }
             out.push_str(&format!("\n[exit code: {}]", code));
-            Ok(out)
+            Ok(ToolOutput::Text(out))
         }
         Ok(Err(e)) => Err(format!("exec error: {}", e)),
         Err(_) => Err(format!("command timed out after {}s", timeout_secs)),
@@ -130,7 +139,7 @@ pub async fn tool_glob(args: Value) -> ToolResult {
     .await
     .map_err(|e| format!("glob task error: {}", e))?;
 
-    result
+    result.map(ToolOutput::Text)
 }
 
 pub async fn tool_grep(args: Value) -> ToolResult {
@@ -150,11 +159,57 @@ pub async fn tool_grep(args: Value) -> ToolResult {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     if stdout.is_empty() {
-        Ok("No matches found.".to_string())
+        Ok(ToolOutput::Text("No matches found.".to_string()))
     } else {
         // Limit output to avoid flooding context
         let lines: Vec<&str> = stdout.lines().take(200).collect();
-        Ok(lines.join("\n"))
+        Ok(ToolOutput::Text(lines.join("\n")))
+    }
+}
+
+pub async fn tool_read_media(args: Value) -> ToolResult {
+    let path = arg_str(&args, "path")?;
+
+    // media_type parameter takes priority over extension-based detection.
+    let mime = args
+        .get("media_type")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .or_else(|| mime_from_extension(&path))
+        .ok_or_else(|| format!("cannot determine media type for {}", path))?;
+
+    // Read first, then check size — avoids TOCTOU race between
+    // metadata() and read() where the file could be swapped.
+    let bytes = fs::read(&path)
+        .await
+        .map_err(|e| format!("read {}: {}", path, e))?;
+
+    if bytes.len() as u64 > MAX_MEDIA_BYTES {
+        return Err(format!(
+            "file too large: {} bytes (max {}MB)",
+            bytes.len(),
+            MAX_MEDIA_BYTES / (1024 * 1024)
+        ));
+    }
+
+    let data = B64.encode(&bytes);
+
+    Ok(ToolOutput::Blocks(vec![ToolContent::ImageBase64 {
+        data,
+        mime_type: mime,
+    }]))
+}
+
+fn mime_from_extension(path: &str) -> Option<String> {
+    let ext = Path::new(path).extension()?.to_str()?.to_lowercase();
+    match ext.as_str() {
+        "png" => Some("image/png".into()),
+        "jpg" | "jpeg" => Some("image/jpeg".into()),
+        "gif" => Some("image/gif".into()),
+        "webp" => Some("image/webp".into()),
+        "svg" => Some("image/svg+xml".into()),
+        "bmp" => Some("image/bmp".into()),
+        _ => None,
     }
 }
 

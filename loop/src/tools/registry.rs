@@ -105,6 +105,20 @@ impl ToolRegistry {
             }),
             "Search file contents with grep.",
         );
+
+        self.register(
+            "read_media",
+            |a| Box::pin(super::tool_read_media(a)),
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute path to a media file" },
+                    "media_type": { "type": "string", "description": "MIME type override (e.g. image/png). Takes priority over extension-based detection." }
+                },
+                "required": ["path"]
+            }),
+            "Read an image file and return it as a visual content block the model can see.",
+        );
     }
 
     fn register(&mut self, name: &str, func: ToolFn, parameters: Value, description: &str) {
@@ -181,7 +195,7 @@ impl ToolRegistry {
     /// Execute a tool by name.
     pub async fn execute(&mut self, name: &str, arguments: Value) -> Result<ToolOutput, String> {
         if let Some(func) = self.builtins.get(name) {
-            return func(arguments).await.map(ToolOutput::Text);
+            return func(arguments).await;
         }
 
         if let Some((client_idx, _)) = self.mcp_tools.get(name) {
