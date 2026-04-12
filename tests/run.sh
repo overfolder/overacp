@@ -16,6 +16,13 @@
 
 set -uo pipefail
 
+# Load .env so LLM_API_KEY (and friends) are visible to the skip-logic
+# below — individual test scripts also source .env, but the runner needs
+# it earlier to decide whether to skip e2e tests.
+if [ -f .env ]; then
+  set -a; source .env; set +a
+fi
+
 SELF="$(realpath "$0")"
 DIR="$(dirname "$SELF")"
 FILTER="${1:-}"

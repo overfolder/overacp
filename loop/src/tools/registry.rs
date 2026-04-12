@@ -1,12 +1,12 @@
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::llm::{FunctionDef, ToolDefinition};
+use crate::llm::{FunctionDef, ToolContent, ToolDefinition};
 use crate::mcp::McpClient;
 
-use super::ToolResult;
+use super::{ToolOutput, ToolResult};
 
 type ToolFn = fn(Value) -> Pin<Box<dyn Future<Output = ToolResult> + Send>>;
 
@@ -15,6 +15,8 @@ pub struct ToolRegistry {
     builtin_defs: Vec<ToolDefinition>,
     mcp_clients: Vec<McpClient>,
     mcp_tools: HashMap<String, (usize, ToolDefinition)>,
+    acp_tools: HashSet<String>,
+    acp_defs: Vec<ToolDefinition>,
 }
 
 impl Default for ToolRegistry {
@@ -30,6 +32,8 @@ impl ToolRegistry {
             builtin_defs: Vec::new(),
             mcp_clients: Vec::new(),
             mcp_tools: HashMap::new(),
+            acp_tools: HashSet::new(),
+            acp_defs: Vec::new(),
         };
         registry.register_builtins();
         registry
@@ -130,29 +134,232 @@ impl ToolRegistry {
         Ok(())
     }
 
-    /// All tool definitions (builtin + MCP) for the LLM.
+    /// Register operator-provided tools discovered via ACP `tools/list`.
+    pub fn set_acp_tools(&mut self, tools: Vec<ToolDefinition>) {
+        self.acp_tools.clear();
+        self.acp_defs.clear();
+        for def in tools {
+            self.acp_tools.insert(def.function.name.clone());
+            self.acp_defs.push(def);
+        }
+    }
+
+    /// Check whether a tool is ACP-provided (executed via the broker,
+    /// not locally).
+    pub fn is_acp_tool(&self, name: &str) -> bool {
+        self.acp_tools.contains(name)
+    }
+
+    /// All tool definitions (builtin + MCP + ACP) for the LLM.
+    ///
+    /// ACP tools shadow builtins and MCP tools with the same name —
+    /// duplicates are filtered so the LLM sees each name exactly once.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        let mut defs = self.builtin_defs.clone();
-        for (_, def) in self.mcp_tools.values() {
+        let mut seen = HashSet::new();
+        let mut defs = Vec::new();
+
+        // ACP first (highest priority — operator controls the surface).
+        for def in &self.acp_defs {
+            seen.insert(def.function.name.clone());
             defs.push(def.clone());
+        }
+        // MCP second.
+        for (_, def) in self.mcp_tools.values() {
+            if seen.insert(def.function.name.clone()) {
+                defs.push(def.clone());
+            }
+        }
+        // Builtins last.
+        for def in &self.builtin_defs {
+            if seen.insert(def.function.name.clone()) {
+                defs.push(def.clone());
+            }
         }
         defs
     }
 
     /// Execute a tool by name.
-    pub async fn execute(&mut self, name: &str, arguments: Value) -> ToolResult {
+    pub async fn execute(&mut self, name: &str, arguments: Value) -> Result<ToolOutput, String> {
         if let Some(func) = self.builtins.get(name) {
-            return func(arguments).await;
+            return func(arguments).await.map(ToolOutput::Text);
         }
 
         if let Some((client_idx, _)) = self.mcp_tools.get(name) {
             let idx = *client_idx;
-            return self.mcp_clients[idx]
+            let contents = self.mcp_clients[idx]
                 .call_tool(name, arguments)
                 .await
-                .map_err(|e| e.to_string());
+                .map_err(|e| e.to_string())?;
+
+            // If all content is text, collapse to a single string for
+            // simpler downstream handling.
+            if contents.iter().all(|c| matches!(c, ToolContent::Text(_))) {
+                let text = contents
+                    .into_iter()
+                    .filter_map(|c| match c {
+                        ToolContent::Text(t) => Some(t),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return Ok(ToolOutput::Text(text));
+            }
+
+            return Ok(ToolOutput::Blocks(contents));
         }
 
         Err(format!("unknown tool: {}", name))
+    }
+}
+
+/// Parse a `tools/list` response from the broker into tool
+/// definitions. Expects `{"tools": [{"name", "description",
+/// "inputSchema"}, ...]}` — the same shape as MCP `tools/list`.
+pub fn parse_acp_tools(value: &Value) -> Vec<ToolDefinition> {
+    let tools = match value.get("tools").and_then(|v| v.as_array()) {
+        Some(arr) => arr,
+        None => return Vec::new(),
+    };
+    tools
+        .iter()
+        .filter_map(|t| {
+            let name = t.get("name")?.as_str()?.to_string();
+            let description = t
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("ACP tool")
+                .to_string();
+            let parameters = t
+                .get("inputSchema")
+                .cloned()
+                .unwrap_or_else(|| json!({"type": "object"}));
+            Some(ToolDefinition {
+                tool_type: "function".to_string(),
+                function: FunctionDef {
+                    name,
+                    description,
+                    parameters,
+                },
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_acp_tools_extracts_tools_from_broker_response() {
+        let value = json!({
+            "tools": [
+                {
+                    "name": "get_weather",
+                    "description": "Get the weather",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": { "city": { "type": "string" } },
+                        "required": ["city"]
+                    }
+                },
+                {
+                    "name": "search",
+                    "description": "Search the web"
+                }
+            ]
+        });
+        let tools = parse_acp_tools(&value);
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].function.name, "get_weather");
+        assert_eq!(tools[0].function.description, "Get the weather");
+        assert_eq!(tools[0].function.parameters["type"], "object");
+        assert_eq!(tools[1].function.name, "search");
+        // Missing inputSchema defaults to {"type": "object"}
+        assert_eq!(tools[1].function.parameters["type"], "object");
+    }
+
+    #[test]
+    fn parse_acp_tools_returns_empty_on_missing_tools_key() {
+        assert!(parse_acp_tools(&json!({})).is_empty());
+        assert!(parse_acp_tools(&json!({"tools": "not_array"})).is_empty());
+    }
+
+    #[test]
+    fn parse_acp_tools_skips_entries_without_name() {
+        let value = json!({"tools": [{"description": "no name"}, {"name": "ok"}]});
+        let tools = parse_acp_tools(&value);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].function.name, "ok");
+    }
+
+    #[test]
+    fn parse_acp_tools_defaults_description() {
+        let value = json!({"tools": [{"name": "bare"}]});
+        let tools = parse_acp_tools(&value);
+        assert_eq!(tools[0].function.description, "ACP tool");
+    }
+
+    #[test]
+    fn set_acp_tools_populates_registry() {
+        let mut registry = ToolRegistry::new();
+        assert!(!registry.is_acp_tool("get_weather"));
+
+        let tools = parse_acp_tools(&json!({
+            "tools": [{"name": "get_weather", "description": "Weather"}]
+        }));
+        registry.set_acp_tools(tools);
+
+        assert!(registry.is_acp_tool("get_weather"));
+        assert!(!registry.is_acp_tool("nonexistent"));
+    }
+
+    #[test]
+    fn definitions_include_acp_tools() {
+        let mut registry = ToolRegistry::new();
+        let builtin_count = registry.definitions().len();
+
+        let tools = parse_acp_tools(&json!({
+            "tools": [{"name": "remote_tool", "description": "Remote"}]
+        }));
+        registry.set_acp_tools(tools);
+
+        let defs = registry.definitions();
+        assert_eq!(defs.len(), builtin_count + 1);
+        assert!(defs.iter().any(|d| d.function.name == "remote_tool"));
+    }
+
+    #[test]
+    fn set_acp_tools_replaces_previous() {
+        let mut registry = ToolRegistry::new();
+        registry.set_acp_tools(parse_acp_tools(&json!({
+            "tools": [{"name": "old_tool"}]
+        })));
+        assert!(registry.is_acp_tool("old_tool"));
+
+        registry.set_acp_tools(parse_acp_tools(&json!({
+            "tools": [{"name": "new_tool"}]
+        })));
+        assert!(!registry.is_acp_tool("old_tool"));
+        assert!(registry.is_acp_tool("new_tool"));
+    }
+
+    #[test]
+    fn acp_tool_shadows_builtin_in_definitions() {
+        let mut registry = ToolRegistry::new();
+        let builtin_count = registry.definitions().len();
+        assert!(builtin_count > 0, "should have builtins");
+
+        // Register an ACP tool with the same name as a builtin.
+        registry.set_acp_tools(parse_acp_tools(&json!({
+            "tools": [{"name": "read", "description": "ACP read override"}]
+        })));
+
+        let defs = registry.definitions();
+        // Total count unchanged — ACP shadows the builtin, no duplicate.
+        assert_eq!(defs.len(), builtin_count);
+
+        // The ACP version wins.
+        let read_def = defs.iter().find(|d| d.function.name == "read").unwrap();
+        assert_eq!(read_def.function.description, "ACP read override");
     }
 }

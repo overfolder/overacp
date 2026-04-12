@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 use tracing::warn;
 
-use super::{Content, ContentBlock, Message};
+use super::{Content, ContentBlock, Message, TypedBlock};
 
 /// Resolve `file:///` URLs in all messages in place.
 pub fn resolve_file_urls(messages: &mut [Message]) {
@@ -20,8 +20,10 @@ pub fn resolve_file_urls(messages: &mut [Message]) {
 /// Resolve `file:///` URLs in a single message in place.
 pub fn resolve_file_urls_in_message(msg: &mut Message) {
     if let Some(Content::Blocks(blocks)) = &mut msg.content {
-        for block in blocks.iter_mut() {
-            resolve_content_block(block);
+        for typed in blocks.iter_mut() {
+            if let TypedBlock::Known(block) = typed {
+                resolve_content_block(block);
+            }
         }
     }
 }
@@ -122,12 +124,10 @@ mod tests {
         let path = tmp.path().to_path_buf();
         let png_path = path.with_extension("png");
         rename(&path, &png_path).unwrap();
-        // Reopen so the tempfile guard doesn't delete the wrong path
         let _guard = scopeguard(&png_path);
 
         let data = b"\x89PNG\r\n\x1a\nfake";
         write(&png_path, data).unwrap();
-        // keep tmp alive so the original doesn't get cleaned up oddly
         drop(tmp);
 
         let url = format!("file://{}", png_path.display());
@@ -197,11 +197,11 @@ mod tests {
         let mut msg = Message {
             role: Role::User,
             content: Some(Content::Blocks(vec![
-                ContentBlock::Text {
+                TypedBlock::Known(ContentBlock::Text {
                     text: "describe these".into(),
-                },
-                image_url_block(&file_url),
-                image_url_block("https://example.com/other.png"),
+                }),
+                TypedBlock::Known(image_url_block(&file_url)),
+                TypedBlock::Known(image_url_block("https://example.com/other.png")),
             ])),
             tool_calls: None,
             tool_call_id: None,
@@ -215,10 +215,10 @@ mod tests {
         };
 
         // Text block unchanged
-        assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "describe these"));
+        assert!(blocks[0].as_text() == Some("describe these"));
         // file:// resolved to data:
         match &blocks[1] {
-            ContentBlock::ImageUrl { image_url } => {
+            TypedBlock::Known(ContentBlock::ImageUrl { image_url }) => {
                 assert!(image_url["url"]
                     .as_str()
                     .unwrap()
@@ -228,7 +228,7 @@ mod tests {
         }
         // https:// unchanged
         match &blocks[2] {
-            ContentBlock::ImageUrl { image_url } => {
+            TypedBlock::Known(ContentBlock::ImageUrl { image_url }) => {
                 assert_eq!(image_url["url"], "https://example.com/other.png");
             }
             _ => panic!("expected unchanged ImageUrl"),

@@ -311,6 +311,129 @@ async fn turn_end_fans_out_to_sse_subscribers() {
 }
 
 #[tokio::test]
+async fn multimodal_content_survives_rest_push_to_tunnel() {
+    // Verify that multimodal content blocks (text + image_url) arrive
+    // at the agent tunnel intact — the broker must not inspect, modify,
+    // or drop any content block.
+    let (state, auth) = fresh_state();
+    let app = router(state.clone());
+    let (addr, _server) = spawn_server(state).await;
+
+    let agent_id = Uuid::new_v4();
+    let agent_token = auth
+        .mint(&Claims::agent(agent_id, None, 60, ISSUER))
+        .unwrap();
+    let admin_token = auth
+        .mint(&Claims::admin(Uuid::new_v4(), 60, ISSUER))
+        .unwrap();
+
+    let mut ws = open_tunnel(addr, agent_id, &agent_token).await;
+    use tokio::time::sleep;
+    sleep(Duration::from_millis(50)).await;
+
+    let multimodal_content = json!([
+        {"type": "text", "text": "describe this image"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+        {"type": "future_block", "payload": [1,2,3]}
+    ]);
+
+    let req = HttpRequest::builder()
+        .method("POST")
+        .uri(format!("/agents/{agent_id}/messages"))
+        .header("authorization", format!("Bearer {admin_token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "role": "user", "content": multimodal_content }).to_string(),
+        ))
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    use axum::http::StatusCode;
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+
+    let frame = recv_text(&mut ws).await.expect("session/message");
+    let parsed: Value = serde_json::from_str(&frame).unwrap();
+    assert_eq!(parsed["method"], "session/message");
+
+    let content = &parsed["params"]["content"];
+    assert!(content.is_array(), "content should be an array of blocks");
+    let blocks = content.as_array().unwrap();
+    assert_eq!(blocks.len(), 3);
+    assert_eq!(blocks[0]["type"], "text");
+    assert_eq!(blocks[0]["text"], "describe this image");
+    assert_eq!(blocks[1]["type"], "image_url");
+    assert!(blocks[1]["image_url"]["url"]
+        .as_str()
+        .unwrap()
+        .starts_with("data:image/png"));
+    // Unknown block type preserved verbatim
+    assert_eq!(blocks[2]["type"], "future_block");
+    assert_eq!(blocks[2]["payload"], json!([1, 2, 3]));
+
+    ws.close(None).await.ok();
+}
+
+#[tokio::test]
+async fn multimodal_turn_end_fans_out_to_sse_with_blocks_intact() {
+    // Verify that a turn/end notification with multimodal content
+    // blocks is forwarded to SSE subscribers without modification.
+    let (state, auth) = fresh_state();
+    let agent_id = Uuid::new_v4();
+
+    let mut rx = state.stream_broker.subscribe(agent_id);
+
+    let (addr, _server) = spawn_server(state).await;
+    let token = auth
+        .mint(&Claims::agent(agent_id, None, 60, ISSUER))
+        .unwrap();
+    let mut ws = open_tunnel(addr, agent_id, &token).await;
+
+    let turn_end = json!({
+        "jsonrpc": "2.0",
+        "method": "turn/end",
+        "params": {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what's this?"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}
+                    ]
+                },
+                {"role": "assistant", "content": "A red pixel."}
+            ],
+            "usage": {"input_tokens": 100, "output_tokens": 10}
+        }
+    });
+
+    ws.send(Message::Text(turn_end.to_string().into()))
+        .await
+        .unwrap();
+
+    let fanned = timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("fan-out timeout")
+        .expect("fan-out closed");
+    let parsed: Value = serde_json::from_str(&fanned).unwrap();
+    assert_eq!(parsed["method"], "turn/end");
+
+    // Verify multimodal user content preserved
+    let user_msg = &parsed["params"]["messages"][0];
+    let user_content = user_msg["content"].as_array().unwrap();
+    assert_eq!(user_content.len(), 2);
+    assert_eq!(user_content[0]["type"], "text");
+    assert_eq!(user_content[1]["type"], "image_url");
+    assert!(user_content[1]["image_url"]["url"]
+        .as_str()
+        .unwrap()
+        .starts_with("data:image/png"));
+
+    // Verify assistant plain string content preserved
+    assert_eq!(parsed["params"]["messages"][1]["content"], "A red pixel.");
+
+    ws.close(None).await.ok();
+}
+
+#[tokio::test]
 async fn rejects_mismatched_agent_jwt_on_upgrade() {
     let (state, auth) = fresh_state();
     let (addr, _server) = spawn_server(state).await;

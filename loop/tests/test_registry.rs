@@ -1,4 +1,4 @@
-use overloop::tools::ToolRegistry;
+use overloop::tools::{ToolOutput, ToolRegistry};
 use serde_json::json;
 use std::fs;
 use tempfile::TempDir;
@@ -43,7 +43,10 @@ async fn test_execute_read() {
         .execute("read", json!({ "path": path.to_str().unwrap() }))
         .await;
 
-    let output = result.unwrap();
+    let output = match result.unwrap() {
+        ToolOutput::Text(s) => s,
+        ToolOutput::Blocks(_) => panic!("expected Text, got Blocks"),
+    };
     assert!(output.contains("hello from registry"));
     assert!(output.contains("1\t")); // line number
 }
