@@ -88,12 +88,12 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
         loop {
             tokio::select! {
                 Some(msg) = rx.recv() => {
-                    if ws_tx.send(Message::Text(msg)).await.is_err() {
+                    if ws_tx.send(Message::Text(msg.into())).await.is_err() {
                         break;
                     }
                 }
                 Some(()) = ping_rx.recv() => {
-                    if ws_tx.send(Message::Ping(Vec::new())).await.is_err() {
+                    if ws_tx.send(Message::Ping(Vec::new().into())).await.is_err() {
                         break;
                     }
                 }
@@ -120,7 +120,7 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
                     || text.contains("\"heartbeat\"")
                 {
                     let sender = ctx.stream_broker.sender_for(agent_id);
-                    let _ = sender.send(text.clone());
+                    let _ = sender.send(text.to_string());
                 }
 
                 if let Some(response) = handle_message(&text, &ctx).await {
