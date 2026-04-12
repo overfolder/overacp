@@ -170,18 +170,6 @@ pub async fn tool_grep(args: Value) -> ToolResult {
 pub async fn tool_read_media(args: Value) -> ToolResult {
     let path = arg_str(&args, "path")?;
 
-    let metadata = fs::metadata(&path)
-        .await
-        .map_err(|e| format!("stat {}: {}", path, e))?;
-
-    if metadata.len() > MAX_MEDIA_BYTES {
-        return Err(format!(
-            "file too large: {} bytes (max {}MB)",
-            metadata.len(),
-            MAX_MEDIA_BYTES / (1024 * 1024)
-        ));
-    }
-
     // media_type parameter takes priority over extension-based detection.
     let mime = args
         .get("media_type")
@@ -190,9 +178,19 @@ pub async fn tool_read_media(args: Value) -> ToolResult {
         .or_else(|| mime_from_extension(&path))
         .ok_or_else(|| format!("cannot determine media type for {}", path))?;
 
+    // Read first, then check size — avoids TOCTOU race between
+    // metadata() and read() where the file could be swapped.
     let bytes = fs::read(&path)
         .await
         .map_err(|e| format!("read {}: {}", path, e))?;
+
+    if bytes.len() as u64 > MAX_MEDIA_BYTES {
+        return Err(format!(
+            "file too large: {} bytes (max {}MB)",
+            bytes.len(),
+            MAX_MEDIA_BYTES / (1024 * 1024)
+        ));
+    }
 
     let data = B64.encode(&bytes);
 
