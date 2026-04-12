@@ -49,7 +49,7 @@ pub fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/tunnel/:agent_id", get(tunnel_upgrade))
+        .route("/tunnel/{agent_id}", get(tunnel_upgrade))
         .merge(admin_only)
         .merge(agent_scoped)
         .with_state(state)
@@ -124,10 +124,10 @@ async fn require_agent_or_admin(
     if !claims.is_agent() {
         return (StatusCode::FORBIDDEN, "admin or agent role required").into_response();
     }
-    // Agent tokens: `sub` must match the `:id` path param. Every
+    // Agent tokens: `sub` must match the `{id}` path param. Every
     // route wired through this middleware is an agent-scoped
-    // route (`/agents/:id/messages`, `/agents/:id/stream`,
-    // `/agents/:id/cancel`), so `path_agent_id` is always `Some`
+    // route (`/agents/{id}/messages`, `/agents/{id}/stream`,
+    // `/agents/{id}/cancel`), so `path_agent_id` is always `Some`
     // — the `None` arm exists only to make the function total
     // rather than panic if a future route accidentally hangs a
     // non-scoped path off this middleware.

@@ -50,7 +50,7 @@ use crate::state::AppState;
 pub fn admin_router() -> Router<AppState> {
     Router::new()
         .route("/agents", get(list_agents))
-        .route("/agents/:id", get(describe_agent).delete(disconnect_agent))
+        .route("/agents/{id}", get(describe_agent).delete(disconnect_agent))
 }
 
 /// Agent-scoped routes: admin JWTs work on any agent, agent JWTs
@@ -58,9 +58,9 @@ pub fn admin_router() -> Router<AppState> {
 /// web frontend typically holds an agent JWT for.
 pub fn agent_scoped_router() -> Router<AppState> {
     Router::new()
-        .route("/agents/:id/messages", post(send_message))
-        .route("/agents/:id/stream", get(stream_events))
-        .route("/agents/:id/cancel", post(cancel_turn))
+        .route("/agents/{id}/messages", post(send_message))
+        .route("/agents/{id}/stream", get(stream_events))
+        .route("/agents/{id}/cancel", post(cancel_turn))
 }
 
 // ── wire types ──────────────────────────────────────────────────

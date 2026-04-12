@@ -19,6 +19,7 @@
 //! `overacp-server::auth`) wraps them behind a swappable interface.
 
 use chrono::Utc;
+use jsonwebtoken::dangerous::insecure_decode;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -139,14 +140,6 @@ pub fn validate_token(
 ///
 /// Never use the returned claims for any authorization decision.
 pub fn peek_claims_unverified(token: &str) -> Result<Claims, ProtocolError> {
-    let mut validation = Validation::default();
-    validation.insecure_disable_signature_validation();
-    validation.validate_exp = false;
-    validation.validate_nbf = false;
-    // No issuer requirement.
-    validation.required_spec_claims.clear();
-
-    // Use a dummy key — signature validation is disabled.
-    let data = decode::<Claims>(token, &DecodingKey::from_secret(b"unused"), &validation)?;
+    let data = insecure_decode::<Claims>(token)?;
     Ok(data.claims)
 }

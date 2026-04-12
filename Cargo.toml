@@ -14,7 +14,7 @@ tokio-tungstenite = { version = "0.29", default-features = false, features = ["c
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 futures-util = { version = "0.3", default-features = false }
 dashmap = "6"
-jsonwebtoken = { version = "10", default-features = false }
+jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs"] }
 dotenvy = "0.15"
 serde = { version = "1" }
 serde_json = { version = "1" }
