@@ -100,9 +100,12 @@ pub async fn run(
             })
             .await;
 
-        // Stream collected text to ACP
+        // Stream collected text to ACP (skip empty deltas the LLM
+        // sends as SSE keepalives)
         for delta in &text_deltas {
-            let _ = acp.stream_text_delta(delta);
+            if !delta.is_empty() {
+                let _ = acp.stream_text_delta(delta);
+            }
         }
 
         let streamed = match streamed {

@@ -31,6 +31,11 @@ SERVER_LOG=${SERVER_LOG:-/tmp/overacp-smoke-e2e-server.log}
 AGENT_LOG=${AGENT_LOG:-/tmp/overacp-smoke-e2e-agent.log}
 SSE_LOG=${SSE_LOG:-/tmp/overacp-smoke-e2e-sse.log}
 
+# Logging. Set RUST_LOG to override. The default enables trace-level
+# output so full JSON-RPC message payloads are printed to the server
+# and agent logs.
+export RUST_LOG="${RUST_LOG:-overacp_server::tunnel=trace,overacp_server=info,overacp_agent::bridge=trace,overacp_agent=info,overloop=info}"
+
 # ── plumbing ─────────────────────────────────────────────────────
 
 need() { command -v "$1" >/dev/null || { echo "missing dep: $1"; exit 1; }; }
@@ -151,7 +156,6 @@ OVERACP_AGENT_BINARY="$(pwd)/target/release/overloop" \
 LLM_API_KEY="$LLM_API_KEY" \
 LLM_API_URL="$LLM_API_URL" \
 OVERFOLDER_MODEL="$OVERFOLDER_MODEL" \
-RUST_LOG="${RUST_LOG:-overacp_agent=info,overloop=info}" \
   ./target/release/overacp-agent > "$AGENT_LOG" 2>&1 &
 AGENT_PID=$!
 echo "agent pid=$AGENT_PID, workspace=$WORKSPACE_DIR, log=$AGENT_LOG"

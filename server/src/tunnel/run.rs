@@ -7,7 +7,7 @@ use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::time;
-use tracing::info;
+use tracing::{info, trace};
 
 use crate::auth::Claims;
 use crate::hooks::{BootProvider, QuotaPolicy, ToolHost};
@@ -106,6 +106,7 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
     while let Some(Ok(msg)) = ws_rx.next().await {
         match msg {
             Message::Text(text) => {
+                trace!(%agent_id, payload = %text, "agent→server");
                 if let Some(entry) = ctx.registry.get(agent_id) {
                     entry.touch();
                 }
@@ -123,6 +124,7 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
                 }
 
                 if let Some(response) = handle_message(&text, &ctx).await {
+                    trace!(%agent_id, payload = %response, "server→agent");
                     if let Some(entry) = ctx.registry.get(agent_id) {
                         let _ = entry.tx.send(response);
                     }

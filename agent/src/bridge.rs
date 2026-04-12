@@ -16,7 +16,7 @@ use anyhow::Result;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMessage};
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 /// Run the bidirectional bridge until either side closes. Generic
 /// over the underlying stream/sink/read/write types so the entire
@@ -70,6 +70,7 @@ where
             Ok(WsMessage::Text(text)) => {
                 let text_str = text.to_string();
                 debug!(len = text_str.len(), "ws→stdin");
+                trace!(payload = %text_str, "ws→stdin");
                 if let Err(e) = write_frame(stdin, &text_str).await {
                     return BridgeExit::Error(format!("write to stdin: {e}"));
                 }
@@ -99,6 +100,7 @@ where
             Ok(_) => {
                 let trimmed = line.trim_end();
                 debug!(len = trimmed.len(), "stdout→ws");
+                trace!(payload = %trimmed, "stdout→ws");
                 if let Err(e) = ws_sink
                     .send(WsMessage::Text(trimmed.to_string().into()))
                     .await
