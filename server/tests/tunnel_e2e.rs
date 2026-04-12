@@ -19,12 +19,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::Request as HttpRequest;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use overacp_server::auth::{Authenticator, Claims};
-use overacp_server::{router, AppState, StaticJwtAuthenticator};
+use overacp_server::{router, AppState, StaticJwtAuthenticator, ToolError, ToolHost};
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
@@ -456,4 +457,79 @@ async fn rejects_mismatched_agent_jwt_on_upgrade() {
         msg.contains("403") || msg.contains("Forbidden"),
         "msg = {msg}"
     );
+}
+
+// ── Operator-provided ToolHost over a real WebSocket ──────────────
+
+/// Trivial ToolHost that exposes one tool and echoes call arguments.
+struct EchoToolHost;
+
+#[async_trait]
+impl ToolHost for EchoToolHost {
+    async fn list(&self, _claims: &Claims) -> Result<Value, ToolError> {
+        Ok(json!({
+            "tools": [{
+                "name": "echo",
+                "description": "echo input back",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "msg": { "type": "string" } },
+                    "required": ["msg"]
+                }
+            }]
+        }))
+    }
+    async fn call(&self, _claims: &Claims, req: Value) -> Result<Value, ToolError> {
+        let msg = req["arguments"]["msg"].as_str().unwrap_or("?");
+        Ok(json!({
+            "content": [{"type": "text", "text": format!("echo: {msg}")}],
+            "isError": false
+        }))
+    }
+}
+
+#[tokio::test]
+async fn tunnel_operator_tools_list_and_call_over_real_ws() {
+    let auth: Arc<dyn Authenticator> = Arc::new(StaticJwtAuthenticator::new(SIGNING_KEY, ISSUER));
+    let state = AppState::new(auth.clone()).with_tool_host(Arc::new(EchoToolHost));
+    let (addr, _server) = spawn_server(state).await;
+
+    let agent_id = Uuid::new_v4();
+    let token = auth
+        .mint(&Claims::agent(agent_id, None, 60, ISSUER))
+        .unwrap();
+    let mut ws = open_tunnel(addr, agent_id, &token).await;
+
+    // tools/list should return the operator-provided tool.
+    ws.send(Message::Text(
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.into(),
+    ))
+    .await
+    .unwrap();
+    let resp = recv_text(&mut ws).await.unwrap();
+    let parsed: Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(parsed["result"]["tools"][0]["name"], "echo");
+
+    // tools/call should execute and return the result.
+    ws.send(Message::Text(
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "echo",
+                "arguments": { "msg": "hello" }
+            }
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    let resp = recv_text(&mut ws).await.unwrap();
+    let parsed: Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(parsed["id"], 2);
+    assert_eq!(parsed["result"]["content"][0]["text"], "echo: hello");
+
+    ws.close(None).await.ok();
 }
