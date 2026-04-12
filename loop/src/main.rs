@@ -72,6 +72,7 @@ async fn run(config: Config) -> Result<()> {
     info!("Initializing conversation...");
     let init = acp.initialize()?;
     let mut messages = init.messages;
+    llm::resolve_file_urls(&mut messages);
 
     // Prepend system prompt if not already present.
     if messages.first().map(|m| &m.role) != Some(&llm::Role::System) {
@@ -97,8 +98,9 @@ async fn run(config: Config) -> Result<()> {
     info!("Waiting for session/message...");
     loop {
         match acp.next_push()? {
-            NextPush::Message(user_msg) => {
+            NextPush::Message(mut user_msg) => {
                 info!("Received user message, starting turn");
+                llm::resolve_file_urls_in_message(&mut user_msg);
                 messages.push(user_msg);
                 if let Err(e) =
                     agentic_loop::run(&mut acp, &llm, &mut registry, &mut messages, &loop_config)
