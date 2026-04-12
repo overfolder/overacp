@@ -205,9 +205,10 @@ if [[ ${#FAILS[@]} -eq 0 ]]; then
   # All gates passed: arm auto-merge so the PR enters the merge queue.
   # ONLY for PRs targeting master.
   # Best-effort and idempotent — failure here must not block stop.
-  if [[ "$PR_BASE" == "master" ]]; then
-    gh pr merge "$PR_NUMBER" --auto --squash >/dev/null 2>&1 || true
-  fi
+  # Auto-merge disabled — gate still validates but does not arm merge.
+  # if [[ "$PR_BASE" == "master" ]]; then
+  #   gh pr merge "$PR_NUMBER" --auto --squash >/dev/null 2>&1 || true
+  # fi
   echo 0 > "$COUNTER_FILE"
   exit 0
 fi
