@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use overacp_server::auth::{Authenticator, Claims};
-use overacp_server::{router, AppState, StaticJwtAuthenticator};
+use overacp_server::{router, AppState, StaticJwtAuthenticator, ToolHost};
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -106,4 +106,73 @@ pub fn cargo_debug_bin(name: &str) -> PathBuf {
 /// Build a canned user-message body for `POST /agents/{id}/messages`.
 pub fn push_body(content: &str) -> serde_json::Value {
     json!({"role": "user", "content": content})
+}
+
+/// Like `spawn_broker`, but wires a custom `ToolHost` into the
+/// broker's `AppState` so operator-provided tools are available
+/// via the `tools/list` / `tools/call` dispatch path.
+pub async fn spawn_broker_with_tool_host(
+    tool_host: Arc<dyn ToolHost>,
+) -> (SocketAddr, Arc<dyn Authenticator>, JoinHandle<()>) {
+    let auth: Arc<dyn Authenticator> = Arc::new(StaticJwtAuthenticator::new(SIGNING_KEY, ISSUER));
+    let state = AppState::new(auth.clone()).with_tool_host(tool_host);
+    let app = router(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (addr, auth, handle)
+}
+
+/// Start a mock LLM that returns a tool call on the first request,
+/// then a text reply on the second. Uses wiremock priority to
+/// sequence responses.
+pub async fn spawn_mock_llm_with_tool_call(
+    tool_name: &str,
+    tool_args: &str,
+    reply_word: &str,
+) -> MockServer {
+    let server = MockServer::start().await;
+
+    // First request: return a tool_call (consumed once via up_to_n_times).
+    let tool_sse = format!(
+        "\
+data: {{\"choices\":[{{\"delta\":{{\"role\":\"assistant\",\"tool_calls\":[{{\"index\":0,\"id\":\"call_e2e\",\"function\":{{\"name\":\"{tool_name}\",\"arguments\":\"\"}}}}]}}}}]}}\n\n\
+data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\"{tool_args}\"}}}}]}}}}]}}\n\n\
+data: {{\"choices\":[{{\"finish_reason\":\"tool_calls\",\"delta\":{{}}}}],\"usage\":{{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}}}\n\n\
+data: [DONE]\n\n",
+    );
+
+    Mock::given(http_method("POST"))
+        .and(http_path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(tool_sse),
+        )
+        .up_to_n_times(1)
+        .with_priority(1) // higher priority = matched first
+        .mount(&server)
+        .await;
+
+    // Second request: return text (always-available fallback).
+    let text_sse = format!(
+        "\
+data: {{\"choices\":[{{\"delta\":{{\"role\":\"assistant\",\"content\":\"{reply_word}\"}}}}]}}\n\n\
+data: {{\"choices\":[{{\"finish_reason\":\"stop\",\"delta\":{{}}}}],\"usage\":{{\"prompt_tokens\":20,\"completion_tokens\":3,\"total_tokens\":23}}}}\n\n\
+data: [DONE]\n\n",
+    );
+
+    Mock::given(http_method("POST"))
+        .and(http_path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(text_sse),
+        )
+        .mount(&server)
+        .await;
+
+    server
 }

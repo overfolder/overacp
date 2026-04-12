@@ -61,4 +61,13 @@ pub trait AcpService {
     /// notification arrives on the tunnel.
     fn next_push(&mut self) -> Result<NextPush>;
     fn heartbeat(&mut self) -> Result<()>;
+
+    /// Fetch operator-provided tool definitions from the broker's
+    /// `ToolHost::list` hook. Returns the raw JSON response
+    /// (typically `{"tools": [...]}`).
+    fn tools_list(&mut self) -> Result<Value>;
+
+    /// Execute an operator-provided tool via the broker's
+    /// `ToolHost::call` hook. Returns the raw JSON response.
+    fn tools_call(&mut self, name: &str, arguments: Value) -> Result<Value>;
 }

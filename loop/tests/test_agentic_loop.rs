@@ -6,7 +6,7 @@ use overloop::llm::{
 };
 use overloop::tools::ToolRegistry;
 use overloop::traits::{AcpService, LlmService, NextPush, StreamedResponse};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -151,6 +151,14 @@ impl AcpService for MockAcp {
 
     fn heartbeat(&mut self) -> Result<()> {
         Ok(())
+    }
+
+    fn tools_list(&mut self) -> Result<Value> {
+        Ok(json!({"tools": []}))
+    }
+
+    fn tools_call(&mut self, _name: &str, _arguments: Value) -> Result<Value> {
+        anyhow::bail!("mock: no ACP tools configured")
     }
 }
 
