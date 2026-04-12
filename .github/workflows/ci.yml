@@ -33,6 +33,7 @@ jobs:
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - 'clippy.toml'
+              - 'tests/**'
               - '.github/workflows/ci.yml'
 
   lint:
@@ -82,10 +83,30 @@ jobs:
           slug: overfolder/overacp
           fail_ci_if_error: true
 
+  smoke:
+    name: Smoke tests
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: smoke
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq uuid-runtime
+          pip install --quiet PyJWT
+          cargo install websocat
+      - name: Smoke tests
+        run: make test-smoke
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, lint, coverage]
+    needs: [changes, lint, coverage, smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs passed or were skipped

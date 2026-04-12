@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 #
-# scripts/smoke.sh — end-to-end local smoke test for overacp-server.
+# tests/smoke-broker.sh — end-to-end local smoke test for overacp-server.
 #
-# Starts the release binary on localhost:8080, mints an admin JWT
+# Starts the debug binary on localhost:8080, mints an admin JWT
 # (self-signed with PyJWT), uses it to mint an agent JWT via
 # POST /tokens, then drives every REST endpoint and every major
 # tunnel dispatch path. Each request is printed with its response
 # so the output is easy to read in sequence.
 #
 # Dependencies on $PATH:
-#   - cargo (builds the binary on first run)
 #   - curl, jq, uuidgen, openssl
 #   - python3 with PyJWT (`pip install PyJWT`)
 #   - websocat  (`cargo install websocat`)
+#
+# Environment:
+#   - TARGET_DIR (optional, default ./target/debug) — directory
+#     containing pre-built binaries.
 #
 # Exit 0 on full success, non-zero on any failure.
 
 set -euo pipefail
 
+TARGET_DIR=${TARGET_DIR:-./target/debug}
 BASE_URL=${BASE_URL:-http://localhost:8080}
 WS_URL=${WS_URL:-ws://localhost:8080}
 LOG=${LOG:-/tmp/overacp-smoke.log}
@@ -42,12 +46,11 @@ trap cleanup EXIT INT TERM
 
 # ── 0. start server ──────────────────────────────────────────────
 
-hr "0. build + start overacp-server"
-cargo build -p overacp-server --release 2>&1 | tail -2
+hr "0. start overacp-server"
 
 export OVERACP_JWT_SIGNING_KEY="$(openssl rand -hex 32)"
 : > "$LOG"
-./target/release/overacp-server > "$LOG" 2>&1 &
+"$TARGET_DIR/overacp-server" > "$LOG" 2>&1 &
 SERVER_PID=$!
 echo "server pid=$SERVER_PID, log=$LOG"
 
@@ -113,10 +116,6 @@ hr "4. drive tunnel dispatch table"
 # ── 5. push while offline → queued → drain on reconnect ─────────
 
 hr "5. REST push while agent is offline → queued → drained on reconnect"
-# This is the headline "REST meets tunnel" flow: it exercises the
-# MessageQueue + drain path end-to-end over a real WebSocket. The
-# "live delivery" path is covered by the Rust test
-# `rest_push_delivers_session_message_inline_to_live_tunnel`.
 
 for n in first second; do
   resp=$(curl -fsS -X POST "$BASE_URL/agents/$AGENT_ID/messages" \
@@ -131,8 +130,6 @@ curl -fsS -H "Authorization: Bearer $ADMIN_JWT" \
   "$BASE_URL/agents/$AGENT_ID" | jq '{agent_id, connected, idle_secs}'
 
 echo "reconnecting, reading two drained frames:"
-# `sleep 0.5` as stdin keeps the WS alive; `head -n 2` closes the
-# pipe after two frames which terminates websocat cleanly.
 sleep 0.5 | websocat -tE\
     -H="Authorization: Bearer $AGENT_JWT" \
     "$WS_URL/tunnel/$AGENT_ID" 2>/dev/null \
@@ -175,4 +172,4 @@ echo "POST /agents/<id>/cancel (agent bearer, matching id): $(status -X POST -H 
 # ── done ─────────────────────────────────────────────────────────
 
 hr "done"
-echo "smoke test complete"
+echo "smoke-broker test complete"
