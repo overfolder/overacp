@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# scripts/smoke-e2e.sh — full-stack end-to-end smoke test.
+# tests/smoke-e2e.sh — full-stack end-to-end smoke test.
 #
 # Drives the real pipeline: overacp-server (broker) + overacp-agent
 # (supervisor) + overloop (child agent) + a real OpenAI-compatible
@@ -9,14 +9,15 @@
 # usage. This is the "is the whole stack alive" smoke test.
 #
 # The broker-only regression path (with a websocat fake agent)
-# remains at scripts/smoke.sh.
+# remains at tests/smoke-broker.sh.
 #
 # Dependencies on $PATH:
-#   - cargo (builds the binaries on first run)
 #   - curl, jq, uuidgen, openssl
 #   - python3 with PyJWT (`pip install PyJWT`)
 #
 # Environment:
+#   - TARGET_DIR (optional, default ./target/debug) — directory
+#     containing pre-built binaries.
 #   - LLM_API_KEY (required) — OpenAI-compatible API key, loaded
 #     from .env if present. The script fails loudly if unset.
 #   - LLM_API_URL (optional, default https://openrouter.ai/api/v1)
@@ -26,6 +27,7 @@
 
 set -euo pipefail
 
+TARGET_DIR=${TARGET_DIR:-./target/debug}
 BASE_URL=${BASE_URL:-http://localhost:8080}
 SERVER_LOG=${SERVER_LOG:-/tmp/overacp-smoke-e2e-server.log}
 AGENT_LOG=${AGENT_LOG:-/tmp/overacp-smoke-e2e-agent.log}
@@ -39,7 +41,7 @@ export RUST_LOG="${RUST_LOG:-overacp_server::tunnel=trace,overacp_server=info,ov
 # ── plumbing ─────────────────────────────────────────────────────
 
 need() { command -v "$1" >/dev/null || { echo "missing dep: $1"; exit 1; }; }
-for dep in curl jq uuidgen openssl python3 cargo; do need "$dep"; done
+for dep in curl jq uuidgen openssl python3; do need "$dep"; done
 python3 -c 'import jwt' 2>/dev/null || {
   echo "missing dep: python3 -m pip install PyJWT"
   exit 1
@@ -83,17 +85,12 @@ fi
 echo "LLM_API_URL=$LLM_API_URL"
 echo "OVERFOLDER_MODEL=$OVERFOLDER_MODEL"
 
-# ── 1. build release binaries ────────────────────────────────────
+# ── 1. start overacp-server ─────────────────────────────────────
 
-hr "1. build release binaries"
-cargo build --release -p overacp-server -p overacp-agent -p overloop 2>&1 | tail -3
-
-# ── 2. start overacp-server ─────────────────────────────────────
-
-hr "2. start overacp-server"
+hr "1. start overacp-server"
 export OVERACP_JWT_SIGNING_KEY="$(openssl rand -hex 32)"
 : > "$SERVER_LOG"
-./target/release/overacp-server > "$SERVER_LOG" 2>&1 &
+"$TARGET_DIR/overacp-server" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 echo "server pid=$SERVER_PID, log=$SERVER_LOG"
 
@@ -104,9 +101,9 @@ done
 curl -fs "$BASE_URL/healthz" >/dev/null || { echo "server didn't come up"; exit 1; }
 echo "healthz=ok"
 
-# ── 3. mint admin JWT ────────────────────────────────────────────
+# ── 2. mint admin JWT ────────────────────────────────────────────
 
-hr "3. self-mint admin JWT"
+hr "2. self-mint admin JWT"
 ADMIN_JWT=$(python3 - <<'PY'
 import os, jwt, time, uuid
 print(jwt.encode({
@@ -119,9 +116,9 @@ PY
 )
 echo "ADMIN_JWT (first 40 chars): ${ADMIN_JWT:0:40}..."
 
-# ── 4. mint agent JWT via POST /tokens ──────────────────────────
+# ── 3. mint agent JWT via POST /tokens ──────────────────────────
 
-hr "4. POST /tokens (admin mints agent JWT)"
+hr "3. POST /tokens (admin mints agent JWT)"
 AGENT_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
 echo "agent_id=$AGENT_ID"
 MINT_RESP=$(curl -fsS -X POST "$BASE_URL/tokens" \
@@ -131,9 +128,9 @@ MINT_RESP=$(curl -fsS -X POST "$BASE_URL/tokens" \
 AGENT_JWT=$(echo "$MINT_RESP" | jq -r .token)
 echo "AGENT_JWT (first 40 chars): ${AGENT_JWT:0:40}..."
 
-# ── 5. start SSE subscriber ─────────────────────────────────────
+# ── 4. start SSE subscriber ─────────────────────────────────────
 
-hr "5. start SSE subscriber in background"
+hr "4. start SSE subscriber in background"
 : > "$SSE_LOG"
 curl -sN "$BASE_URL/agents/$AGENT_ID/stream" \
   -H "Authorization: Bearer $ADMIN_JWT" \
@@ -144,24 +141,24 @@ echo "sse pid=$SSE_PID, log=$SSE_LOG"
 # starts emitting frames.
 sleep 0.5
 
-# ── 6. start overacp-agent supervisor ───────────────────────────
+# ── 5. start overacp-agent supervisor ───────────────────────────
 
-hr "6. start overacp-agent supervisor"
+hr "5. start overacp-agent supervisor"
 WORKSPACE_DIR=$(mktemp -d)
 : > "$AGENT_LOG"
 OVERACP_TOKEN="$AGENT_JWT" \
 OVERACP_SERVER_URL="$BASE_URL" \
 OVERACP_WORKSPACE="$WORKSPACE_DIR" \
-OVERACP_AGENT_BINARY="$(pwd)/target/release/overloop" \
+OVERACP_AGENT_BINARY="$TARGET_DIR/overloop" \
 LLM_API_KEY="$LLM_API_KEY" \
 LLM_API_URL="$LLM_API_URL" \
 OVERFOLDER_MODEL="$OVERFOLDER_MODEL" \
-  ./target/release/overacp-agent > "$AGENT_LOG" 2>&1 &
+  "$TARGET_DIR/overacp-agent" > "$AGENT_LOG" 2>&1 &
 AGENT_PID=$!
 echo "agent pid=$AGENT_PID, workspace=$WORKSPACE_DIR, log=$AGENT_LOG"
 
 # Poll GET /agents/{id} until the tunnel is connected.
-hr "7. wait for tunnel connected"
+hr "6. wait for tunnel connected"
 CONNECTED=false
 for _ in $(seq 1 50); do
   state=$(curl -fsS -H "Authorization: Bearer $ADMIN_JWT" \
@@ -179,18 +176,18 @@ if [ "$CONNECTED" != "true" ]; then
 fi
 echo "tunnel connected"
 
-# ── 8. push a message via REST ──────────────────────────────────
+# ── 7. push a message via REST ──────────────────────────────────
 
-hr "8. POST /agents/{id}/messages"
+hr "7. POST /agents/{id}/messages"
 PUSH_RESP=$(curl -fsS -X POST "$BASE_URL/agents/$AGENT_ID/messages" \
   -H "Authorization: Bearer $ADMIN_JWT" \
   -H "Content-Type: application/json" \
   -d '{"role":"user","content":"Reply with exactly the single word HELLO and nothing else."}')
 echo "push → $PUSH_RESP"
 
-# ── 9. wait for turn/end on SSE ─────────────────────────────────
+# ── 8. wait for turn/end on SSE ─────────────────────────────────
 
-hr "9. wait up to 120s for turn/end on SSE"
+hr "8. wait up to 120s for turn/end on SSE"
 DEADLINE=$(( $(date +%s) + 120 ))
 TURN_END_LINE=""
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
@@ -212,9 +209,9 @@ echo "turn/end received:"
 TURN_END_JSON=$(echo "$TURN_END_LINE" | sed 's/^data: //')
 echo "$TURN_END_JSON" | jq '{method, input_tokens: .params.usage.input_tokens, output_tokens: .params.usage.output_tokens, message_count: (.params.messages | length)}'
 
-# ── 10. assert usage was reported ───────────────────────────────
+# ── 9. assert usage was reported ───────────────────────────────
 
-hr "10. assert params.usage.input_tokens > 0"
+hr "9. assert params.usage.input_tokens > 0"
 INPUT_TOKENS=$(echo "$TURN_END_JSON" | jq -r '.params.usage.input_tokens // 0')
 if [ "$INPUT_TOKENS" -gt 0 ]; then
   echo "usage reported ($INPUT_TOKENS input tokens)"

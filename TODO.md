@@ -175,7 +175,7 @@ abstraction; Docker/Morph backends are operator territory.
       `OVERACP_WORKSPACE_SYNC` env var.
 - [x] End-to-end demo: clone repo, `cargo run`, mint an admin JWT,
       `POST /tokens` for an agent, `POST /agents/{id}/messages`,
-      observe the SSE stream. *(Landed as `scripts/smoke-e2e.sh` —
+      observe the SSE stream. *(Landed as `tests/smoke-e2e.sh` —
       requires `LLM_API_KEY` in `.env`.)*
 
 ## 0.6 — `overacp-tools-mcp` + Overfolder cutover
