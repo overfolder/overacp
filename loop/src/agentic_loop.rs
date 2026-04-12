@@ -156,7 +156,15 @@ pub async fn run(
                 // fires AFTER, both echoing the same tool-call id.
                 let _ = acp.stream_tool_call(&tc.id, name, &args);
 
-                let result = registry.execute(name, args).await;
+                let result = if registry.is_acp_tool(name) {
+                    // Route through ACP tunnel to operator's ToolHost.
+                    match acp.tools_call(name, args) {
+                        Ok(value) => extract_acp_tool_result(&value),
+                        Err(e) => Err(e.to_string()),
+                    }
+                } else {
+                    registry.execute(name, args).await
+                };
 
                 let (content, is_error) = match result {
                     Ok(output) => (tool_output_to_content(output), false),
@@ -243,9 +251,54 @@ fn tool_output_to_content(output: ToolOutput) -> Content {
     }
 }
 
+/// Extract a result from an ACP `tools/call` response, returning a
+/// [`ToolOutput`] compatible with the multimodal tool pipeline.
+///
+/// Supports MCP-style `{"content": [{"type":"text","text":"..."}], "isError": bool}`
+/// as well as opaque JSON (stringified as fallback).
+fn extract_acp_tool_result(value: &Value) -> Result<ToolOutput, String> {
+    let is_error = value
+        .get("isError")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    // Try MCP-style content array first.
+    if let Some(content) = value.get("content").and_then(|c| c.as_array()) {
+        let text: String = content
+            .iter()
+            .filter_map(|block| {
+                if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    block.get("text").and_then(|t| t.as_str()).map(String::from)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !text.is_empty() {
+            return if is_error {
+                Err(text)
+            } else {
+                Ok(ToolOutput::Text(text))
+            };
+        }
+    }
+
+    // Fallback: stringify the whole value.
+    let text = serde_json::to_string(value).unwrap_or_else(|_| value.to_string());
+    if is_error {
+        Err(text)
+    } else {
+        Ok(ToolOutput::Text(text))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    // ── tool_output_to_content tests (multimodal) ──
 
     #[test]
     fn tool_output_text_converts_to_content_text() {
@@ -304,6 +357,72 @@ mod tests {
         match content {
             Content::Blocks(blocks) => assert!(blocks.is_empty()),
             _ => panic!("expected empty Blocks"),
+        }
+    }
+
+    // ── extract_acp_tool_result tests ──
+
+    #[test]
+    fn extract_mcp_style_text_content() {
+        let value = json!({
+            "content": [{"type": "text", "text": "sunny, 22C"}],
+            "isError": false
+        });
+        match extract_acp_tool_result(&value) {
+            Ok(ToolOutput::Text(s)) => assert_eq!(s, "sunny, 22C"),
+            other => panic!("expected Ok(Text), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_mcp_style_error() {
+        let value = json!({
+            "content": [{"type": "text", "text": "city not found"}],
+            "isError": true
+        });
+        match extract_acp_tool_result(&value) {
+            Err(msg) => assert_eq!(msg, "city not found"),
+            other => panic!("expected Err, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_multi_block_joins_text() {
+        let value = json!({
+            "content": [
+                {"type": "text", "text": "line1"},
+                {"type": "image", "data": "..."},
+                {"type": "text", "text": "line2"}
+            ]
+        });
+        match extract_acp_tool_result(&value) {
+            Ok(ToolOutput::Text(s)) => assert_eq!(s, "line1\nline2"),
+            other => panic!("expected Ok(Text), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_fallback_stringifies_opaque_json() {
+        let value = json!({"result": 42});
+        match extract_acp_tool_result(&value) {
+            Ok(ToolOutput::Text(s)) => assert!(s.contains("42")),
+            other => panic!("expected Ok(Text), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_fallback_with_is_error() {
+        let value = json!({"detail": "bad", "isError": true});
+        assert!(extract_acp_tool_result(&value).is_err());
+    }
+
+    #[test]
+    fn extract_empty_content_array_falls_back() {
+        let value = json!({"content": [], "isError": false});
+        // Empty content array → no text blocks → fallback to stringify
+        match extract_acp_tool_result(&value) {
+            Ok(ToolOutput::Text(s)) => assert!(s.contains("content")),
+            other => panic!("expected Ok(Text), got {other:?}"),
         }
     }
 }

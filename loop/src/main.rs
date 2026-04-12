@@ -3,14 +3,14 @@ use std::env;
 use std::io;
 use std::time::Duration;
 use tokio::runtime::Builder;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use overloop::acp::AcpClient;
 use overloop::agentic_loop::{self, LoopConfig};
 use overloop::config::Config;
 use overloop::llm;
-use overloop::tools::ToolRegistry;
+use overloop::tools::{parse_acp_tools, ToolRegistry};
 use overloop::traits::{AcpService, NextPush};
 
 fn main() -> Result<()> {
@@ -43,6 +43,20 @@ async fn run(config: Config) -> Result<()> {
         info!("Connecting to MCP server: {}", url);
         if let Err(e) = registry.connect_mcp(url).await {
             error!("Failed to connect to MCP server {}: {}", url, e);
+        }
+    }
+
+    // Fetch operator-provided tools via ACP `tools/list`.
+    match acp.tools_list() {
+        Ok(tools_value) => {
+            let tools = parse_acp_tools(&tools_value);
+            if !tools.is_empty() {
+                info!("Discovered {} ACP tool(s)", tools.len());
+                registry.set_acp_tools(tools);
+            }
+        }
+        Err(e) => {
+            warn!("Failed to fetch ACP tools: {}", e);
         }
     }
 

@@ -13,6 +13,7 @@ use overacp_protocol::messages::{
 use overacp_protocol::methods;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Read, Stdin, Stdout, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -79,6 +80,9 @@ pub struct JsonRpcNotification {
 pub struct AcpClient<R: Read, W: Write> {
     reader: BufReader<R>,
     writer: W,
+    /// Notifications that arrived while `send_request` was waiting for
+    /// a response. Drained first by `recv_notification`.
+    pending_notifications: VecDeque<String>,
 }
 
 impl AcpClient<Stdin, Stdout> {
@@ -87,6 +91,7 @@ impl AcpClient<Stdin, Stdout> {
         Self {
             reader: BufReader::new(io::stdin()),
             writer: io::stdout(),
+            pending_notifications: VecDeque::new(),
         }
     }
 }
@@ -97,6 +102,7 @@ impl<R: Read, W: Write> AcpClient<R, W> {
         Self {
             reader: BufReader::new(reader),
             writer,
+            pending_notifications: VecDeque::new(),
         }
     }
 
@@ -116,17 +122,37 @@ impl<R: Read, W: Write> AcpClient<R, W> {
             .context("write request")?;
         self.writer.flush()?;
 
-        let mut buf = String::new();
-        self.reader.read_line(&mut buf).context("read response")?;
+        // Read lines until we get a JSON-RPC response (has `id`).
+        // Notifications (no `id`, has `method`) that arrive during
+        // this wait are buffered for later consumption by
+        // `recv_notification`.
+        loop {
+            let mut buf = String::new();
+            self.reader.read_line(&mut buf).context("read response")?;
 
-        let resp: JsonRpcResponse = serde_json::from_str(&buf).context("parse ACP response")?;
+            // Quick check: if the line contains a `method` field and
+            // no `id` field, it's a notification — buffer it.
+            let peek: Value = serde_json::from_str(&buf).context("parse ACP frame")?;
+            if peek.get("method").is_some() && peek.get("id").is_none() {
+                tracing::debug!(
+                    method = peek["method"].as_str().unwrap_or("?"),
+                    "buffering notification received during send_request"
+                );
+                self.pending_notifications.push_back(buf);
+                continue;
+            }
 
-        if let Some(err) = resp.error {
-            anyhow::bail!("ACP error: {}", err.message);
+            let resp: JsonRpcResponse =
+                serde_json::from_value(peek).context("parse ACP response")?;
+
+            if let Some(err) = resp.error {
+                anyhow::bail!("ACP error: {}", err.message);
+            }
+
+            return resp
+                .result
+                .ok_or_else(|| anyhow::anyhow!("ACP response missing result"));
         }
-
-        resp.result
-            .ok_or_else(|| anyhow::anyhow!("ACP response missing result"))
     }
 
     fn send_notification(&mut self, method: &'static str, params: Option<Value>) -> Result<()> {
@@ -153,6 +179,11 @@ impl<R: Read, W: Write> AcpClient<R, W> {
     }
 
     fn recv_notification(&mut self) -> Result<JsonRpcNotification> {
+        // Drain any notifications buffered during send_request first.
+        if let Some(buf) = self.pending_notifications.pop_front() {
+            return serde_json::from_str(&buf).context("parse buffered notification");
+        }
+
         let mut buf = String::new();
         let n = self
             .reader
@@ -276,6 +307,20 @@ impl<R: Read, W: Write> AcpService for AcpClient<R, W> {
 
     fn heartbeat(&mut self) -> Result<()> {
         self.send_notification(methods::HEARTBEAT, None)
+    }
+
+    fn tools_list(&mut self) -> Result<Value> {
+        self.send_request(methods::TOOLS_LIST, None)
+    }
+
+    fn tools_call(&mut self, name: &str, arguments: Value) -> Result<Value> {
+        self.send_request(
+            methods::TOOLS_CALL,
+            Some(json!({
+                "name": name,
+                "arguments": arguments,
+            })),
+        )
     }
 }
 
@@ -695,5 +740,62 @@ mod tests {
         let mut acp = mock_acp(&input);
         let err = acp.quota_check().unwrap_err();
         assert!(err.to_string().contains("bad"));
+    }
+
+    #[test]
+    fn tools_list_sends_request_and_returns_result() {
+        let input = jsonrpc_result(
+            1,
+            json!({"tools": [{"name": "echo", "description": "Echo tool"}]}),
+        );
+        let mut acp = mock_acp(&input);
+        let result = acp.tools_list().unwrap();
+        assert_eq!(result["tools"][0]["name"], "echo");
+
+        let out = String::from_utf8(acp.writer.clone()).unwrap();
+        let parsed: Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(parsed["method"], "tools/list");
+        assert!(parsed["id"].is_u64());
+    }
+
+    #[test]
+    fn tools_list_surfaces_error() {
+        let input = format!(
+            "{}\n",
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":1404,"message":"not found"}})
+        );
+        let mut acp = mock_acp(&input);
+        let err = acp.tools_list().unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn tools_call_sends_name_and_arguments() {
+        let input = jsonrpc_result(
+            1,
+            json!({"content": [{"type": "text", "text": "sunny"}], "isError": false}),
+        );
+        let mut acp = mock_acp(&input);
+        let result = acp
+            .tools_call("get_weather", json!({"city": "London"}))
+            .unwrap();
+        assert_eq!(result["content"][0]["text"], "sunny");
+
+        let out = String::from_utf8(acp.writer.clone()).unwrap();
+        let parsed: Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(parsed["method"], "tools/call");
+        assert_eq!(parsed["params"]["name"], "get_weather");
+        assert_eq!(parsed["params"]["arguments"]["city"], "London");
+    }
+
+    #[test]
+    fn tools_call_surfaces_execution_error() {
+        let input = format!(
+            "{}\n",
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":1502,"message":"exec failed"}})
+        );
+        let mut acp = mock_acp(&input);
+        let err = acp.tools_call("bad_tool", json!({})).unwrap_err();
+        assert!(err.to_string().contains("exec failed"));
     }
 }
