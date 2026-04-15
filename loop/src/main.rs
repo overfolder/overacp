@@ -80,7 +80,9 @@ fn init_tracing() -> Result<()> {
 
 #[cfg(feature = "sentry")]
 fn init_sentry(config: &Config) -> Option<sentry::ClientInitGuard> {
+    use overacp_common::sentry_rate_limit;
     use sentry::types::Dsn;
+    use std::sync::Arc;
 
     let dsn_str = config.sentry_dsn.as_deref()?;
     // Parse up-front so a malformed DSN is surfaced rather than silently
@@ -99,6 +101,7 @@ fn init_sentry(config: &Config) -> Option<sentry::ClientInitGuard> {
         release: sentry::release_name!(),
         traces_sample_rate: config.sentry_traces_sample_rate,
         environment: Some(config.sentry_environment.clone().into()),
+        before_send: Some(Arc::new(sentry_rate_limit::before_send)),
         ..Default::default()
     });
     if let Some(name) = config.agent_name.as_ref() {

@@ -1,0 +1,17 @@
+[package]
+name = "overacp-common"
+description = "Shared helpers reused across over/ACP crates."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sentry = { version = "0.47", default-features = false, optional = true }
+
+[features]
+default = []
+sentry = ["dep:sentry"]
+
+[lints]
+workspace = true
