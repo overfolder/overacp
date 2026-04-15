@@ -189,6 +189,19 @@ The proxy is the most load-bearing new component. It solves three problems in on
 
 **With the LLM proxy, we get Langfuse for any harness at the API call level.** The proxy emits per-call traces (prompt, response, tokens, cost, latency). Tool call context comes from ACP streaming. Full observability regardless of harness choice.
 
+### Sentry: Process-Level Error Reporting
+
+Langfuse and Sentry cover orthogonal axes and should not be confused:
+
+| Axis | Tool | What it captures |
+|------|------|------------------|
+| LLM call traces | Langfuse | Prompt, response, tokens, cost, latency — one trace per API call. |
+| Process errors | Sentry | Panics and `tracing::error!` events from the agent process itself — broker disconnects, MCP failures, config errors, tool-handler bugs. |
+
+`overloop` ships optional Sentry integration behind the `sentry` cargo feature (off by default, zero compile-time and runtime cost when unused). At runtime, activation requires `SENTRY_DSN` — otherwise everything is a no-op. When enabled, every `tracing::error!` automatically becomes a Sentry event via the `sentry-tracing` layer; no call-site changes required.
+
+**Fleet identification.** A fleet of overloop processes on many VMs needs a way to attribute an error (or a log line) back to one specific process. That is what `OVERLOOP_AGENT_NAME` is for: a process-local identity env var that becomes a field on the root tracing span and a tag on every Sentry event (`agent_name:worker-42`). It is deliberately decoupled from the over/ACP wire `agent_id` (the JWT `sub` claim) — the broker never sees it, and operators can set it to whatever fits their orchestration (pod name, VM id, worker label, …). See [`SPEC.md § Fleet observability and identity`](../../../SPEC.md#fleet-observability-and-identity).
+
 ---
 
 ## Transport: Morph VM Integration

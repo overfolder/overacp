@@ -10,6 +10,12 @@ pub struct Config {
     pub mcp_servers: Vec<String>,
     pub max_iterations: usize,
     pub timeout_minutes: u64,
+    /// Process-local identity. Attached as a tracing span field and,
+    /// when the `sentry` feature is enabled, as a Sentry tag.
+    pub agent_name: Option<String>,
+    pub sentry_dsn: Option<String>,
+    pub sentry_environment: String,
+    pub sentry_traces_sample_rate: f32,
 }
 
 impl Config {
@@ -41,6 +47,23 @@ impl Config {
             .parse()
             .unwrap_or(60);
 
+        let agent_name = env::var("OVERLOOP_AGENT_NAME")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let sentry_dsn = env::var("SENTRY_DSN")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let sentry_environment = env::var("SENTRY_ENVIRONMENT").unwrap_or_else(|_| "local".into());
+
+        let sentry_traces_sample_rate: f32 = env::var("SENTRY_TRACES_SAMPLE_RATE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.1);
+
         Ok(Self {
             llm_api_key,
             llm_api_url,
@@ -49,6 +72,10 @@ impl Config {
             mcp_servers,
             max_iterations,
             timeout_minutes,
+            agent_name,
+            sentry_dsn,
+            sentry_environment,
+            sentry_traces_sample_rate,
         })
     }
 }
@@ -68,6 +95,10 @@ mod tests {
             "MCP_SERVERS",
             "MAX_ITERATIONS",
             "TIMEOUT_MINUTES",
+            "OVERLOOP_AGENT_NAME",
+            "SENTRY_DSN",
+            "SENTRY_ENVIRONMENT",
+            "SENTRY_TRACES_SAMPLE_RATE",
         ] {
             env::remove_var(key);
         }
@@ -95,6 +126,10 @@ mod tests {
         assert!(cfg.mcp_servers.is_empty());
         assert_eq!(cfg.max_iterations, 100);
         assert_eq!(cfg.timeout_minutes, 60);
+        assert!(cfg.agent_name.is_none());
+        assert!(cfg.sentry_dsn.is_none());
+        assert_eq!(cfg.sentry_environment, "local");
+        assert!((cfg.sentry_traces_sample_rate - 0.1).abs() < f32::EPSILON);
         cleanup_env();
     }
 
@@ -117,6 +152,50 @@ mod tests {
         assert_eq!(cfg.mcp_servers, vec!["http://a"]);
         assert_eq!(cfg.max_iterations, 50);
         assert_eq!(cfg.timeout_minutes, 30);
+        cleanup_env();
+    }
+
+    #[test]
+    #[serial]
+    fn test_sentry_and_agent_name_custom() {
+        cleanup_env();
+        env::set_var("LLM_API_KEY", "test");
+        env::set_var("OVERLOOP_AGENT_NAME", "worker-42");
+        env::set_var("SENTRY_DSN", "https://key@example.ingest.sentry.io/1");
+        env::set_var("SENTRY_ENVIRONMENT", "prod");
+        env::set_var("SENTRY_TRACES_SAMPLE_RATE", "0.25");
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.agent_name.as_deref(), Some("worker-42"));
+        assert_eq!(
+            cfg.sentry_dsn.as_deref(),
+            Some("https://key@example.ingest.sentry.io/1")
+        );
+        assert_eq!(cfg.sentry_environment, "prod");
+        assert!((cfg.sentry_traces_sample_rate - 0.25).abs() < f32::EPSILON);
+        cleanup_env();
+    }
+
+    #[test]
+    #[serial]
+    fn test_empty_agent_name_and_dsn_treated_as_unset() {
+        cleanup_env();
+        env::set_var("LLM_API_KEY", "test");
+        env::set_var("OVERLOOP_AGENT_NAME", "   ");
+        env::set_var("SENTRY_DSN", "");
+        let cfg = Config::from_env().unwrap();
+        assert!(cfg.agent_name.is_none());
+        assert!(cfg.sentry_dsn.is_none());
+        cleanup_env();
+    }
+
+    #[test]
+    #[serial]
+    fn test_invalid_traces_sample_rate_falls_back_to_default() {
+        cleanup_env();
+        env::set_var("LLM_API_KEY", "test");
+        env::set_var("SENTRY_TRACES_SAMPLE_RATE", "not-a-number");
+        let cfg = Config::from_env().unwrap();
+        assert!((cfg.sentry_traces_sample_rate - 0.1).abs() < f32::EPSILON);
         cleanup_env();
     }
 
