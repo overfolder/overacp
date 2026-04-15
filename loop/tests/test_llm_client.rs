@@ -188,6 +188,77 @@ async fn test_retry_on_429() {
 }
 
 #[tokio::test]
+async fn test_retry_on_5xx() {
+    let server = MockServer::start().await;
+
+    let success_body = json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "ok"
+            },
+            "finish_reason": "stop"
+        }]
+    });
+
+    let responder = CyclingResponder {
+        responses: Mutex::new(
+            vec![
+                ResponseTemplate::new(502).set_body_string("bad gateway"),
+                ResponseTemplate::new(200).set_body_json(&success_body),
+            ]
+            .into(),
+        ),
+    };
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(responder)
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let client = LlmClient::new(&server.uri(), "test-key", "test-model");
+    let messages = vec![user_msg("Hi")];
+    let response = client.complete(&messages).await.unwrap();
+
+    let msg = response.choices[0].message.as_ref().unwrap();
+    assert_eq!(msg.content.as_ref().unwrap().as_text().unwrap(), "ok");
+}
+
+#[tokio::test]
+async fn test_stream_read_error() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Accept one connection, announce a chunked body, then close the
+    // socket mid-chunk so the client's stream yields an Err on next poll.
+    tokio::spawn(async move {
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let mut buf = vec![0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            let resp = "HTTP/1.1 200 OK\r\n\
+                        Content-Type: text/event-stream\r\n\
+                        Transfer-Encoding: chunked\r\n\
+                        \r\n\
+                        20\r\n\
+                        data: {\"choices\":[{\"delta\":";
+            let _ = sock.write_all(resp.as_bytes()).await;
+            // Drop socket without finishing the chunk or sending a terminator.
+        }
+    });
+
+    let url = format!("http://{addr}");
+    let client = LlmClient::new(&url, "test-key", "test-model");
+    let messages = vec![user_msg("Hi")];
+    let result = client.stream_completion(&messages, &[], &mut |_| {}).await;
+    assert!(result.is_err(), "expected stream read error");
+}
+
+#[tokio::test]
 async fn test_no_retry_on_400() {
     let server = MockServer::start().await;
 
