@@ -72,6 +72,10 @@ identity. Those are jobs for whichever system wraps it.
 - **No durable resume state.** "Resume agent X" means cold-starting
   the agent, which calls `BootProvider::initialize`; the operator's
   hook decides what resumed state to return.
+- **No prescribed telemetry stack.** over/ACP does not mandate a
+  logging format, metrics exporter, or error reporter. Agents and
+  operators wire up whatever observability they want on their own
+  side. See [§ Fleet observability and identity](#fleet-observability-and-identity).
 
 ## Crates
 
@@ -406,6 +410,34 @@ Default implementations: `BootProvider` returns an empty bootstrap
 HS256 JWTs against a static signing key. The reference server boots
 with all four defaults so `cargo run` works out of the box and
 end-to-end demos don't need an operator stack.
+
+## Fleet observability and identity
+
+A typical deployment runs many agent processes across a VM fleet.
+over/ACP keeps identity and observability deliberately minimal on the
+wire so each side can evolve independently.
+
+- **Process-local identity is not wire identity.** The broker
+  identifies agents by `agent_id` (the `sub` JWT claim). A separate
+  *process-local* name — `OVERLOOP_AGENT_NAME` in the reference agent,
+  equivalent env vars in other `AgentAdapter` implementations — is used
+  only on the untrusted side, to tag the process's own logs, metrics,
+  and error reports. It never crosses the wire and the broker never
+  sees it. Operators are free to set it to a pod name, VM id, an
+  operator-assigned worker label, or leave it unset.
+- **Error reporting is operator-chosen.** The framework does not
+  prescribe a reporter. The reference agent ships **optional Sentry
+  integration** (cargo feature `sentry`, activated at runtime when
+  `SENTRY_DSN` is set); when enabled, every `tracing::error!` from the
+  agent process becomes a Sentry event, tagged with `agent_name` when
+  provided. With the feature off, or the DSN unset, there is zero
+  overhead. Other adapters are free to wire up a different reporter, or
+  none.
+- **Langfuse vs Sentry.** Where both are in play (as in the sister
+  Overfolder system), they cover orthogonal axes: Langfuse traces
+  individual LLM calls (prompt, response, tokens, cost); Sentry
+  captures panics and error-level logs from the agent process. Either,
+  both, or neither can be used with over/ACP.
 
 ## What lives outside
 

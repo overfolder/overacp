@@ -32,6 +32,22 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uuid = { version = "1.23.0", features = ["v4"] }
 walkdir = "2.5.0"
 
+# Optional Sentry error reporting. Disabled by default so operators who
+# don't want Sentry pay no compile-time or runtime cost. Enable with
+# `--features sentry`; runtime activation still requires `SENTRY_DSN`.
+sentry = { version = "0.47", default-features = false, features = [
+    "backtrace",
+    "contexts",
+    "reqwest",
+    "rustls",
+    "tracing",
+], optional = true }
+sentry-tracing = { version = "0.47", optional = true }
+
+[features]
+default = []
+sentry = ["dep:sentry", "dep:sentry-tracing"]
+
 [lints]
 workspace = true
 
