@@ -5,7 +5,8 @@ use tracing::{error, info, warn};
 
 use crate::compaction::{compact_messages, estimate_tokens};
 use crate::llm::{
-    Content, ContentBlock, Message, Role, StopReason, ToolContent, TypedBlock, Usage,
+    parse_tool_arguments, Content, ContentBlock, Message, ParsedArguments, Role, StopReason,
+    ToolContent, TypedBlock, Usage,
 };
 use crate::tools::{ToolOutput, ToolRegistry};
 use crate::traits::{AcpService, LlmService};
@@ -144,8 +145,28 @@ pub async fn run(
         if let Some(tool_calls) = &streamed.message.tool_calls {
             for tc in tool_calls {
                 let name = &tc.function.name;
-                let args: Value =
-                    serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
+
+                let args: Value = match parse_tool_arguments(name, &tc.function.arguments) {
+                    ParsedArguments::Ok(v) => v,
+                    ParsedArguments::Failed { error_message, .. } => {
+                        // Arguments were truncated by streaming — skip
+                        // execution and feed an actionable error back
+                        // to the LLM so it can retry with smaller input
+                        // instead of silently getting `{}` and looping.
+                        let _ = acp.stream_activity(&format!("Invalid tool arguments: {}", name));
+                        let _ = acp.stream_tool_call(&tc.id, name, &Value::Null);
+                        let content = Content::Text(error_message);
+                        let content_value = serde_json::to_value(&content).unwrap_or(Value::Null);
+                        let _ = acp.stream_tool_result(&tc.id, &content_value, true);
+                        messages.push(Message {
+                            role: Role::Tool,
+                            content: Some(content),
+                            tool_calls: None,
+                            tool_call_id: Some(tc.id.clone()),
+                        });
+                        continue;
+                    }
+                };
 
                 // Human-readable activity log — kept for back-compat
                 // with consumers that only watch stream/activity.

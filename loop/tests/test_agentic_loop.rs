@@ -330,6 +330,55 @@ async fn test_tool_call_failure_streams_is_error_true() {
 }
 
 #[tokio::test]
+async fn test_truncated_tool_arguments_feed_actionable_error_to_llm() {
+    // LLM emits a tool call whose JSON arguments were truncated by
+    // streaming. The loop must skip execution, surface an actionable
+    // error through stream/toolResult with is_error=true, and push a
+    // Role::Tool message carrying the tip so the LLM can retry.
+    let truncated = r#"{"path": "/workspace/test.txt", "content": "hello worl"#;
+    let llm = MockLlm::new(vec![
+        make_tool_call_response("write", truncated),
+        make_text_response("Ok, retrying smaller.", StopReason::Stop),
+    ]);
+    let mut acp = MockAcp::new(true);
+    let mut registry = ToolRegistry::new();
+    let mut messages = vec![user_msg("write a big file")];
+
+    run(
+        &mut acp,
+        &llm,
+        &mut registry,
+        &mut messages,
+        &default_config(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(acp.tool_calls_streamed.len(), 1);
+    assert_eq!(acp.tool_results_streamed.len(), 1);
+    assert!(
+        acp.tool_results_streamed[0].is_error,
+        "truncated args must be surfaced as is_error=true"
+    );
+    assert_eq!(
+        acp.tool_calls_streamed[0].id, acp.tool_results_streamed[0].id,
+        "call and result ids must match"
+    );
+
+    let tool_msgs: Vec<_> = messages.iter().filter(|m| m.role == Role::Tool).collect();
+    assert_eq!(tool_msgs.len(), 1);
+    let tool_output = tool_msgs[0].content.as_ref().unwrap().as_text().unwrap();
+    assert!(
+        tool_output.contains("truncated") && tool_output.contains("edit to append"),
+        "actionable tip missing from tool message: {}",
+        tool_output
+    );
+
+    // The LLM must have been re-invoked to consume the error feedback.
+    assert!(llm.responses.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn test_quota_exhausted() {
     let llm = MockLlm::new(vec![]);
     let mut acp = MockAcp::new(false);
