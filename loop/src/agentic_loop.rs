@@ -1,5 +1,6 @@
 use anyhow::Result;
-use serde_json::Value;
+use chrono::Utc;
+use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
@@ -8,8 +9,12 @@ use crate::llm::{
     parse_tool_arguments, Content, ContentBlock, Message, ParsedArguments, Role, StopReason,
     ToolContent, TypedBlock, Usage,
 };
+use crate::observability::{GenerationParams, SessionTrace, ToolSpanParams};
 use crate::tools::{ToolOutput, ToolRegistry};
 use crate::traits::{AcpService, LlmService};
+
+/// Maximum characters captured for tool input/output in a Langfuse span.
+const LF_TRUNCATE: usize = 4096;
 
 const CONTEXT_WINDOW: usize = 128_000;
 const COMPACTION_THRESHOLD: f64 = 0.80;
@@ -22,6 +27,9 @@ const SILENCE_NUDGE: &str = "You haven't produced any output. Please respond to 
 pub struct LoopConfig {
     pub max_iterations: usize,
     pub timeout: Duration,
+    /// Model name recorded on Langfuse generation spans. Free-form label;
+    /// the trace is untouched when the `SessionTrace` is disabled.
+    pub model: String,
 }
 
 pub async fn run(
@@ -30,6 +38,7 @@ pub async fn run(
     registry: &mut ToolRegistry,
     messages: &mut Vec<Message>,
     config: &LoopConfig,
+    trace: &SessionTrace,
 ) -> Result<()> {
     let start = Instant::now();
     let mut total_usage = Usage {
@@ -39,6 +48,8 @@ pub async fn run(
     };
     let mut silent_turns = 0u32;
     let mut last_heartbeat = Instant::now();
+    let mut response_text = String::new();
+    let mut tool_count: usize = 0;
 
     for iteration in 0..config.max_iterations {
         // Timeout check
@@ -97,11 +108,14 @@ pub async fn run(
         // LLM call — collect text deltas, stream to ACP after
         let mut text_deltas = Vec::new();
         let tools = registry.definitions();
+        let message_count = messages.len();
+        let lf_start = Utc::now();
         let streamed = llm
             .stream_completion(messages, &tools, &mut |text| {
                 text_deltas.push(text.to_string());
             })
             .await;
+        let lf_end = Utc::now();
 
         // Stream collected text to ACP (skip empty deltas the LLM
         // sends as SSE keepalives)
@@ -115,10 +129,68 @@ pub async fn run(
             Ok(s) => s,
             Err(e) => {
                 error!("LLM call failed: {}", e);
+                // `{e:#}` walks anyhow's source chain, so whatever the
+                // LLM client wraps (plain string, classified enum, etc.)
+                // we surface the full context in Langfuse rather than
+                // just the outermost message.
+                let status_message = format!("{e:#}");
+                trace.record_generation(GenerationParams {
+                    model: config.model.clone(),
+                    message_count,
+                    input_preview: json!({"message_count": message_count}),
+                    output_text: None,
+                    stop_reason: "error".into(),
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                    cost: 0.0,
+                    start_time: lf_start,
+                    end_time: lf_end,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    level: Some("ERROR".into()),
+                    status_message: Some(status_message),
+                });
                 acp.stream_text_delta(&format!("\n\n[LLM error: {}]", e))?;
                 break;
             }
         };
+
+        // Record successful generation on Langfuse.
+        let streamed_text: String = text_deltas.join("");
+        let stop_reason_str = match &streamed.finish_reason {
+            Some(StopReason::Stop) => "stop",
+            Some(StopReason::ToolCalls) => "tool_calls",
+            Some(StopReason::Length) => "length",
+            Some(StopReason::ContentFilter) => "content_filter",
+            None => "unknown",
+        };
+        trace.record_generation(GenerationParams {
+            model: config.model.clone(),
+            message_count,
+            input_preview: json!({"message_count": message_count}),
+            output_text: (!streamed_text.is_empty()).then(|| streamed_text.clone()),
+            stop_reason: stop_reason_str.into(),
+            prompt_tokens: streamed
+                .usage
+                .as_ref()
+                .map(|u| u.prompt_tokens)
+                .unwrap_or(0),
+            completion_tokens: streamed
+                .usage
+                .as_ref()
+                .map(|u| u.completion_tokens)
+                .unwrap_or(0),
+            cost: 0.0,
+            start_time: lf_start,
+            end_time: lf_end,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            level: None,
+            status_message: None,
+        });
+        if !streamed_text.is_empty() {
+            response_text.push_str(&streamed_text);
+        }
 
         // Track usage
         if let Some(usage) = &streamed.usage {
@@ -177,15 +249,17 @@ pub async fn run(
                 // fires AFTER, both echoing the same tool-call id.
                 let _ = acp.stream_tool_call(&tc.id, name, &args);
 
+                let tool_start = Utc::now();
                 let result = if registry.is_acp_tool(name) {
                     // Route through ACP tunnel to operator's ToolHost.
-                    match acp.tools_call(name, args) {
+                    match acp.tools_call(name, args.clone()) {
                         Ok(value) => extract_acp_tool_result(&value),
                         Err(e) => Err(e.to_string()),
                     }
                 } else {
-                    registry.execute(name, args).await
+                    registry.execute(name, args.clone()).await
                 };
+                let tool_end = Utc::now();
 
                 let (content, is_error) = match result {
                     Ok(output) => (tool_output_to_content(output), false),
@@ -193,6 +267,15 @@ pub async fn run(
                 };
 
                 let content_value = serde_json::to_value(&content).unwrap_or(Value::Null);
+                trace.record_tool_span(ToolSpanParams {
+                    name: name.clone(),
+                    input: truncate_for_trace(&args.to_string()),
+                    output: truncate_for_trace(&content_value.to_string()),
+                    is_error,
+                    start_time: tool_start,
+                    end_time: tool_end,
+                });
+                tool_count += 1;
                 let _ = acp.stream_tool_result(&tc.id, &content_value, is_error);
 
                 messages.push(Message {
@@ -235,7 +318,22 @@ pub async fn run(
         error!("Failed to emit turn/end: {}", e);
     }
 
+    trace.finalize(total_usage.total_tokens, 0.0, tool_count, &response_text);
+
     Ok(())
+}
+
+fn truncate_for_trace(s: &str) -> String {
+    if s.len() <= LF_TRUNCATE {
+        return s.to_string();
+    }
+    let mut end = LF_TRUNCATE;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = s[..end].to_string();
+    out.push_str("…[truncated]");
+    out
 }
 
 fn system_msg(text: &str) -> Message {
