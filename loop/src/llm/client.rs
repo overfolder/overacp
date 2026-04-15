@@ -409,3 +409,96 @@ impl LlmService for LlmClient {
         self.complete(messages).await
     }
 }
+
+#[cfg(test)]
+mod classify_tests {
+    use super::{classify_reqwest_error, StreamError};
+    use std::error::Error as _;
+    use std::time::Duration;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Trigger a real connect error by hitting a closed local port.
+    async fn connect_error() -> reqwest::Error {
+        reqwest::Client::new()
+            .get("http://127.0.0.1:1/")
+            .send()
+            .await
+            .expect_err("connect to :1 should fail")
+    }
+
+    /// Trigger a real timeout error with an unroutable address and a tiny
+    /// deadline.
+    async fn timeout_error() -> reqwest::Error {
+        reqwest::Client::builder()
+            .timeout(Duration::from_millis(1))
+            .build()
+            .unwrap()
+            .get("http://10.255.255.1/")
+            .send()
+            .await
+            .expect_err("unroutable + 1ms timeout should fail")
+    }
+
+    #[tokio::test]
+    async fn classifies_connect_error_as_retryable() {
+        let e = connect_error().await;
+        let classified = classify_reqwest_error(e, Duration::from_millis(500));
+        assert!(classified.is_retryable());
+        let msg = classified.to_string();
+        assert!(
+            msg.contains("Connection error") && msg.contains("0.5s"),
+            "unexpected message: {msg}"
+        );
+        // Source chain must be preserved.
+        assert!(classified.source().is_some());
+    }
+
+    #[tokio::test]
+    async fn classifies_timeout_as_retryable() {
+        let e = timeout_error().await;
+        // Not every platform maps this to is_timeout (some hit is_connect
+        // first); either way the classifier must produce Retryable with
+        // the elapsed marker.
+        let classified = classify_reqwest_error(e, Duration::from_millis(1200));
+        assert!(classified.is_retryable());
+        assert!(classified.to_string().contains("1.2s"));
+    }
+
+    #[tokio::test]
+    async fn classifies_4xx_status_as_fatal() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let e = reqwest::get(server.uri())
+            .await
+            .unwrap()
+            .error_for_status()
+            .expect_err("401 should be error_for_status err");
+        let classified = classify_reqwest_error(e, Duration::from_millis(100));
+        assert!(matches!(classified, StreamError::Fatal { .. }));
+        assert!(!classified.is_retryable());
+        assert!(classified.to_string().contains("401"));
+    }
+
+    #[tokio::test]
+    async fn classifies_5xx_status_as_retryable() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let e = reqwest::get(server.uri())
+            .await
+            .unwrap()
+            .error_for_status()
+            .expect_err("503 should be error_for_status err");
+        let classified = classify_reqwest_error(e, Duration::from_millis(100));
+        assert!(classified.is_retryable());
+        assert!(classified.to_string().contains("503"));
+    }
+}
