@@ -1414,6 +1414,8 @@ dependencies = [
  "overacp-server",
  "reqwest",
  "rustls",
+ "sentry",
+ "sentry-tracing",
  "serde",
  "serde_json",
  "tempfile",
