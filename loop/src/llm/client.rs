@@ -3,7 +3,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::Value;
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use crate::traits::{LlmService, StreamedResponse};
 use tokio::time::sleep;
@@ -95,21 +95,29 @@ impl LlmClient {
             {
                 Ok(resp) if resp.status().is_success() => return Ok(resp),
                 Ok(resp) if resp.status().as_u16() == 429 => {
-                    last_err = Some(anyhow::anyhow!("rate limited (429)"));
+                    let body_text = resp.text().await.unwrap_or_default();
+                    let msg = format!("rate limited (429): {body_text}");
+                    self.report_llm_error(attempt, &msg);
+                    last_err = Some(anyhow::anyhow!(msg));
                     continue;
                 }
                 Ok(resp) if resp.status().is_server_error() => {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
-                    last_err = Some(anyhow::anyhow!("server error {}: {}", status, body));
+                    let msg = format!("server error {status}: {body}");
+                    self.report_llm_error(attempt, &msg);
+                    last_err = Some(anyhow::anyhow!(msg));
                     continue;
                 }
                 Ok(resp) => {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
-                    anyhow::bail!("LLM error {}: {}", status, body);
+                    let msg = format!("LLM error {status}: {body}");
+                    self.report_llm_error(attempt, &msg);
+                    anyhow::bail!(msg);
                 }
                 Err(e) => {
+                    self.report_llm_error(attempt, &e.to_string());
                     last_err = Some(e.into());
                     continue;
                 }
@@ -117,6 +125,33 @@ impl LlmClient {
         }
 
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("LLM request failed")))
+    }
+
+    /// Emit an error-level tracing event with structured Sentry context
+    /// (provider/model/retry tags + error body extra) when the `sentry`
+    /// feature is enabled. Without the feature, this is just a tracing
+    /// `error!` call.
+    fn report_llm_error(&self, retry: u32, error_body: &str) {
+        #[cfg(feature = "sentry")]
+        {
+            let model = self.model.as_str();
+            sentry::with_scope(
+                |scope| {
+                    scope.set_tag("llm.provider", "openai-compatible");
+                    scope.set_tag("llm.model", model);
+                    scope.set_tag("llm.retry", retry.to_string());
+                    scope.set_extra(
+                        "llm.error_body",
+                        serde_json::Value::String(error_body.to_string()),
+                    );
+                },
+                || {
+                    error!(model = %model, retry, "LLM error: {}", error_body);
+                },
+            );
+        }
+        #[cfg(not(feature = "sentry"))]
+        error!(model = %self.model, retry, "LLM error: {}", error_body);
     }
 
     async fn process_stream(
@@ -134,7 +169,13 @@ impl LlmClient {
         let mut buffer = String::new();
 
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.context("read SSE chunk")?;
+            let chunk = match chunk {
+                Ok(c) => c,
+                Err(e) => {
+                    self.report_llm_error(0, &format!("read SSE chunk: {e}"));
+                    return Err(anyhow::Error::new(e).context("read SSE chunk"));
+                }
+            };
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
             while let Some(line_end) = buffer.find('\n') {
