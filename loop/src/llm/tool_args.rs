@@ -32,12 +32,25 @@ pub fn parse_tool_arguments(tool_name: &str, raw: &str) -> ParsedArguments {
                 error = %parse_err,
                 "Failed to parse streamed tool arguments"
             );
-            let tip = truncation_tip(tool_name);
-            let error_message = format!(
-                "tool arguments were truncated ({char_count} chars of incomplete JSON).\n\
-                 Your {tool_name} content was too large for a single tool call.\n\
-                 Action: {tip}"
-            );
+            // `is_eof` is serde_json's signal for "input ended mid-token",
+            // which is what streaming truncation looks like. Anything else
+            // is a syntax error in otherwise-complete JSON — we keep a
+            // size-reduction tip since oversized args correlate with both
+            // failure modes, but the framing has to match reality.
+            let error_message = if parse_err.is_eof() {
+                let tip = truncation_tip(tool_name);
+                format!(
+                    "tool arguments were truncated ({char_count} chars of incomplete JSON).\n\
+                     Your {tool_name} content was too large for a single tool call.\n\
+                     Action: {tip}"
+                )
+            } else {
+                let tip = truncation_tip(tool_name);
+                format!(
+                    "tool arguments failed to parse as JSON ({char_count} chars): {parse_err}.\n\
+                     Fix the JSON syntax and retry. If the arguments are large, also: {tip}"
+                )
+            };
             ParsedArguments::Failed {
                 char_count,
                 error_message,
@@ -89,6 +102,20 @@ mod tests {
     fn parse_empty_string() {
         let result = parse_tool_arguments("exec", "");
         assert!(matches!(result, ParsedArguments::Failed { .. }));
+    }
+
+    #[test]
+    fn parse_syntax_error_not_truncation() {
+        // Complete JSON-ish input with a syntax error — not EOF. The
+        // error message must not mislead the LLM into thinking the
+        // input was truncated.
+        let raw = r#"{"path": "a", "content": not_quoted}"#;
+        let result = parse_tool_arguments("write", raw);
+        let ParsedArguments::Failed { error_message, .. } = result else {
+            panic!("expected Failed");
+        };
+        assert!(!error_message.contains("truncated"));
+        assert!(error_message.contains("failed to parse as JSON"));
     }
 
     #[test]
