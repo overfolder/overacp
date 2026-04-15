@@ -1410,6 +1410,7 @@ dependencies = [
  "bytes",
  "dotenvy",
  "futures-util",
+ "overacp-common",
  "overacp-protocol",
  "overacp-server",
  "reqwest",
@@ -1426,6 +1427,13 @@ dependencies = [
  "url",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "overacp-common"
+version = "0.1.0"
+dependencies = [
+ "sentry",
 ]
 
 [[package]]
@@ -1495,6 +1503,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "glob",
+ "overacp-common",
  "overacp-protocol",
  "reqwest",
  "sentry",
