@@ -16,6 +16,24 @@ pub mod run;
 pub mod tunnel;
 pub mod workspace;
 
+use std::future::Future;
+
+/// Isolate a future's Sentry hub from the caller's.
+///
+/// Prevents background tasks spawned via `tokio::spawn` from
+/// inheriting an unrelated parent transaction. When the `sentry`
+/// feature is disabled this is a pass-through.
+#[cfg(feature = "sentry")]
+pub fn sentry_isolated<F: Future>(fut: F) -> sentry::SentryFuture<F> {
+    use sentry::SentryFutureExt;
+    fut.bind_hub(sentry::Hub::new_from_top(sentry::Hub::current()))
+}
+
+#[cfg(not(feature = "sentry"))]
+pub fn sentry_isolated<F: Future>(fut: F) -> F {
+    fut
+}
+
 pub use adapter::{AgentAdapter, LoopAdapter};
 pub use bridge::{run as run_bridge, BridgeExit};
 pub use config::Config;
