@@ -13,8 +13,10 @@ use overloop::acp::AcpClient;
 use overloop::agentic_loop::{self, LoopConfig};
 use overloop::config::Config;
 use overloop::llm;
+use overloop::observability::LangfuseTracer;
 use overloop::tools::{parse_acp_tools, ToolRegistry};
 use overloop::traits::{AcpService, NextPush};
+use uuid::Uuid;
 
 fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -174,7 +176,14 @@ async fn run(config: Config) -> Result<()> {
     let loop_config = LoopConfig {
         max_iterations: config.max_iterations,
         timeout: Duration::from_secs(config.timeout_minutes * 60),
+        model: config.model.clone(),
     };
+
+    let tracer = LangfuseTracer::new(&config);
+    // One Langfuse session_id per agent process — each user-message
+    // turn becomes its own trace under this session, so multi-turn
+    // conversations group in the UI.
+    let langfuse_session_id = Uuid::new_v4().to_string();
 
     // Outer turn loop: block until the next user message arrives
     // inline in a `session/message` notification, then run a turn.
@@ -185,10 +194,29 @@ async fn run(config: Config) -> Result<()> {
             NextPush::Message(mut user_msg) => {
                 info!("Received user message, starting turn");
                 llm::resolve_file_urls_in_message(&mut user_msg);
+                let user_preview = user_msg
+                    .content
+                    .as_ref()
+                    .and_then(|c| c.extract_text())
+                    .unwrap_or_default();
                 messages.push(user_msg);
-                if let Err(e) =
-                    agentic_loop::run(&mut acp, &llm, &mut registry, &mut messages, &loop_config)
-                        .await
+
+                let trace = tracer.start_session(langfuse_session_id.clone());
+                let mut tags = vec![config.model.clone()];
+                if let Some(name) = &config.agent_name {
+                    tags.push(name.clone());
+                }
+                trace.create_trace(&user_preview, tags);
+
+                if let Err(e) = agentic_loop::run(
+                    &mut acp,
+                    &llm,
+                    &mut registry,
+                    &mut messages,
+                    &loop_config,
+                    &trace,
+                )
+                .await
                 {
                     error!("Agentic loop error: {}", e);
                 }

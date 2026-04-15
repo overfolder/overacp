@@ -4,6 +4,7 @@ use overloop::llm::{
     CompletionResponse, Content, FunctionCall, Message, Role, StopReason, ToolCall, ToolDefinition,
     Usage,
 };
+use overloop::observability::SessionTrace;
 use overloop::tools::ToolRegistry;
 use overloop::traits::{AcpService, LlmService, NextPush, StreamedResponse};
 use serde_json::{json, Value};
@@ -209,6 +210,7 @@ fn default_config() -> LoopConfig {
     LoopConfig {
         max_iterations: 10,
         timeout: Duration::from_secs(30),
+        model: "test-model".into(),
     }
 }
 
@@ -236,6 +238,7 @@ async fn test_simple_text_response() {
         &mut registry,
         &mut messages,
         &default_config(),
+        &SessionTrace::noop(),
     )
     .await
     .unwrap();
@@ -265,6 +268,7 @@ async fn test_tool_call_round_trip() {
         &mut registry,
         &mut messages,
         &default_config(),
+        &SessionTrace::noop(),
     )
     .await
     .unwrap();
@@ -313,6 +317,7 @@ async fn test_tool_call_failure_streams_is_error_true() {
         &mut registry,
         &mut messages,
         &default_config(),
+        &SessionTrace::noop(),
     )
     .await
     .unwrap();
@@ -350,6 +355,7 @@ async fn test_truncated_tool_arguments_feed_actionable_error_to_llm() {
         &mut registry,
         &mut messages,
         &default_config(),
+        &SessionTrace::noop(),
     )
     .await
     .unwrap();
@@ -391,6 +397,7 @@ async fn test_quota_exhausted() {
         &mut registry,
         &mut messages,
         &default_config(),
+        &SessionTrace::noop(),
     )
     .await
     .unwrap();
@@ -414,11 +421,19 @@ async fn test_timeout() {
     let config = LoopConfig {
         max_iterations: 10,
         timeout: Duration::from_millis(0),
+        model: "test-model".into(),
     };
 
-    run(&mut acp, &llm, &mut registry, &mut messages, &config)
-        .await
-        .unwrap();
+    run(
+        &mut acp,
+        &llm,
+        &mut registry,
+        &mut messages,
+        &config,
+        &SessionTrace::noop(),
+    )
+    .await
+    .unwrap();
 
     assert!(
         acp.text_deltas
@@ -442,6 +457,7 @@ async fn test_llm_error() {
         &mut registry,
         &mut messages,
         &default_config(),
+        &SessionTrace::noop(),
     )
     .await
     .unwrap();
@@ -466,6 +482,7 @@ async fn test_content_length_stop() {
         &mut registry,
         &mut messages,
         &default_config(),
+        &SessionTrace::noop(),
     )
     .await
     .unwrap();
@@ -492,6 +509,7 @@ async fn test_content_filter_stop() {
         &mut registry,
         &mut messages,
         &default_config(),
+        &SessionTrace::noop(),
     )
     .await
     .unwrap();
@@ -520,11 +538,19 @@ async fn test_wind_down_injects_system_message_when_iterations_remaining_equals_
     let config = LoopConfig {
         max_iterations: 5,
         timeout: Duration::from_secs(30),
+        model: "test-model".into(),
     };
 
-    run(&mut acp, &llm, &mut registry, &mut messages, &config)
-        .await
-        .unwrap();
+    run(
+        &mut acp,
+        &llm,
+        &mut registry,
+        &mut messages,
+        &config,
+        &SessionTrace::noop(),
+    )
+    .await
+    .unwrap();
 
     let wind_down = messages.iter().any(|m| {
         m.role == Role::System
@@ -583,6 +609,7 @@ async fn test_silence_nudge_injected_after_three_silent_turns() {
         &mut registry,
         &mut messages,
         &default_config(),
+        &SessionTrace::noop(),
     )
     .await
     .unwrap();

@@ -16,6 +16,14 @@ pub struct Config {
     pub sentry_dsn: Option<String>,
     pub sentry_environment: String,
     pub sentry_traces_sample_rate: f32,
+    /// Langfuse public key. When absent, Langfuse tracing is a no-op.
+    pub langfuse_public_key: Option<String>,
+    /// Langfuse secret key. When absent, Langfuse tracing is a no-op.
+    pub langfuse_secret_key: Option<String>,
+    /// Langfuse ingestion host. Defaults to `https://cloud.langfuse.com`.
+    pub langfuse_host: String,
+    /// Tag attached to every Langfuse observation. Defaults to `local`.
+    pub langfuse_environment: String,
 }
 
 impl Config {
@@ -64,6 +72,22 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.1);
 
+        let langfuse_public_key = env::var("LANGFUSE_PUBLIC_KEY")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let langfuse_secret_key = env::var("LANGFUSE_SECRET_KEY")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let langfuse_host =
+            env::var("LANGFUSE_HOST").unwrap_or_else(|_| "https://cloud.langfuse.com".into());
+
+        let langfuse_environment =
+            env::var("LANGFUSE_ENVIRONMENT").unwrap_or_else(|_| "local".into());
+
         Ok(Self {
             llm_api_key,
             llm_api_url,
@@ -76,6 +100,10 @@ impl Config {
             sentry_dsn,
             sentry_environment,
             sentry_traces_sample_rate,
+            langfuse_public_key,
+            langfuse_secret_key,
+            langfuse_host,
+            langfuse_environment,
         })
     }
 }
@@ -99,6 +127,10 @@ mod tests {
             "SENTRY_DSN",
             "SENTRY_ENVIRONMENT",
             "SENTRY_TRACES_SAMPLE_RATE",
+            "LANGFUSE_PUBLIC_KEY",
+            "LANGFUSE_SECRET_KEY",
+            "LANGFUSE_HOST",
+            "LANGFUSE_ENVIRONMENT",
         ] {
             env::remove_var(key);
         }
@@ -130,6 +162,40 @@ mod tests {
         assert!(cfg.sentry_dsn.is_none());
         assert_eq!(cfg.sentry_environment, "local");
         assert!((cfg.sentry_traces_sample_rate - 0.1).abs() < f32::EPSILON);
+        assert!(cfg.langfuse_public_key.is_none());
+        assert!(cfg.langfuse_secret_key.is_none());
+        assert_eq!(cfg.langfuse_host, "https://cloud.langfuse.com");
+        assert_eq!(cfg.langfuse_environment, "local");
+        cleanup_env();
+    }
+
+    #[test]
+    #[serial]
+    fn test_langfuse_custom() {
+        cleanup_env();
+        env::set_var("LLM_API_KEY", "test");
+        env::set_var("LANGFUSE_PUBLIC_KEY", "pk-xyz");
+        env::set_var("LANGFUSE_SECRET_KEY", "sk-xyz");
+        env::set_var("LANGFUSE_HOST", "https://self.hosted.langfuse");
+        env::set_var("LANGFUSE_ENVIRONMENT", "prod");
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.langfuse_public_key.as_deref(), Some("pk-xyz"));
+        assert_eq!(cfg.langfuse_secret_key.as_deref(), Some("sk-xyz"));
+        assert_eq!(cfg.langfuse_host, "https://self.hosted.langfuse");
+        assert_eq!(cfg.langfuse_environment, "prod");
+        cleanup_env();
+    }
+
+    #[test]
+    #[serial]
+    fn test_langfuse_empty_keys_treated_as_unset() {
+        cleanup_env();
+        env::set_var("LLM_API_KEY", "test");
+        env::set_var("LANGFUSE_PUBLIC_KEY", "   ");
+        env::set_var("LANGFUSE_SECRET_KEY", "");
+        let cfg = Config::from_env().unwrap();
+        assert!(cfg.langfuse_public_key.is_none());
+        assert!(cfg.langfuse_secret_key.is_none());
         cleanup_env();
     }
 
