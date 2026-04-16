@@ -1,5 +1,6 @@
 mod client;
 mod resolve;
+mod retry;
 mod tool_args;
 mod types;
 
