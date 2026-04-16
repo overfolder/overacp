@@ -1,103 +1,19 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::Value;
-use std::error::Error as StdError;
-use std::fmt;
+use std::result::Result as StdResult;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
 use crate::traits::{LlmService, StreamedResponse};
 use tokio::time::sleep;
 
+use super::retry::{classify_http_response, classify_reqwest_error, RetryState, StreamError};
 use super::{
     CompletionResponse, Content, Delta, FunctionCall, Message, Role, StreamEvent, ToolCall,
     ToolDefinition,
 };
-
-/// Classifies mid-stream / transport errors so callers can decide whether to
-/// retry.
-#[derive(Debug)]
-enum StreamError {
-    /// Transient failure (timeout, connection reset, server error) — caller
-    /// should retry with backoff.
-    Retryable {
-        message: String,
-        source: Box<dyn StdError + Send + Sync>,
-    },
-    /// Permanent failure (auth error, bad request) — retrying will not help.
-    Fatal {
-        message: String,
-        source: Box<dyn StdError + Send + Sync>,
-    },
-}
-
-impl fmt::Display for StreamError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Retryable { message, .. } | Self::Fatal { message, .. } => {
-                write!(f, "{message}")
-            }
-        }
-    }
-}
-
-impl StdError for StreamError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Self::Retryable { source, .. } | Self::Fatal { source, .. } => Some(source.as_ref()),
-        }
-    }
-}
-
-impl StreamError {
-    const fn is_retryable(&self) -> bool {
-        matches!(self, Self::Retryable { .. })
-    }
-}
-
-/// Inspect a `reqwest::Error` and wrap it as retryable or fatal.
-fn classify_reqwest_error(e: reqwest::Error, elapsed: Duration) -> StreamError {
-    let elapsed_s = elapsed.as_secs_f64();
-    if e.is_timeout() {
-        StreamError::Retryable {
-            message: format!("Stream read timed out after {elapsed_s:.1}s: {e}"),
-            source: Box::new(e),
-        }
-    } else if e.is_connect() {
-        StreamError::Retryable {
-            message: format!("Connection error during stream after {elapsed_s:.1}s: {e}"),
-            source: Box::new(e),
-        }
-    } else if e.is_body() || e.is_decode() {
-        // Body / decode errors typically indicate a connection reset mid-stream.
-        StreamError::Retryable {
-            message: format!(
-                "Stream body error (possible connection reset) after {elapsed_s:.1}s: {e}"
-            ),
-            source: Box::new(e),
-        }
-    } else if let Some(status) = e.status() {
-        if status.is_server_error() {
-            StreamError::Retryable {
-                message: format!("Server error {status} during stream after {elapsed_s:.1}s: {e}"),
-                source: Box::new(e),
-            }
-        } else {
-            // 4xx — auth, bad request, etc.
-            StreamError::Fatal {
-                message: format!("Client error {status} during stream after {elapsed_s:.1}s: {e}"),
-                source: Box::new(e),
-            }
-        }
-    } else {
-        // Unknown reqwest error — treat as retryable to be safe.
-        StreamError::Retryable {
-            message: format!("Stream error after {elapsed_s:.1}s: {e}"),
-            source: Box::new(e),
-        }
-    }
-}
 
 pub struct LlmClient {
     client: Client,
@@ -139,12 +55,26 @@ impl LlmClient {
             body["tools"] = serde_json::to_value(tools)?;
         }
 
-        let response = self
-            .request_with_retry(&body)
-            .await
-            .context("LLM request failed")?;
+        let mut state = RetryState::new();
+        loop {
+            let mut emitted = false;
+            let outcome = match self.post_or_classify(&body).await {
+                Ok(resp) => self.process_stream(resp, on_text, &mut emitted).await,
+                Err(e) => Err(e),
+            };
 
-        self.process_stream(response, on_text).await
+            match outcome {
+                Ok(v) => return Ok(v),
+                Err(mut e) => {
+                    if emitted && e.is_retryable() {
+                        e = e.into_fatal_with_prefix(
+                            "mid-stream error after partial output emitted; cannot retry safely",
+                        );
+                    }
+                    self.handle_failure(&mut state, e).await?;
+                }
+            }
+        }
     }
 
     /// Non-streaming completion (used by compaction).
@@ -154,68 +84,77 @@ impl LlmClient {
             "messages": messages,
         });
 
-        let response = self.request_with_retry(&body).await?;
-        let text = response.text().await?;
-        serde_json::from_str(&text).context("parse completion response")
-    }
-
-    async fn request_with_retry(&self, body: &Value) -> Result<reqwest::Response> {
-        let url = format!("{}/chat/completions", self.api_url);
-        let mut last_err = None;
-
-        for attempt in 0..3 {
-            if attempt > 0 {
-                let delay = Duration::from_millis(500 * 2u64.pow(attempt));
-                warn!("LLM retry attempt {}, waiting {:?}", attempt, delay);
-                sleep(delay).await;
+        let mut state = RetryState::new();
+        loop {
+            let outcome: StdResult<CompletionResponse, StreamError> = async {
+                let resp = self.post_or_classify(&body).await?;
+                let attempt_start = Instant::now();
+                let text = resp
+                    .text()
+                    .await
+                    .map_err(|e| classify_reqwest_error(e, attempt_start.elapsed()))?;
+                serde_json::from_str::<CompletionResponse>(&text).map_err(|e| StreamError::Fatal {
+                    message: format!("parse completion response: {e}"),
+                    body: None,
+                    source: Box::new(e),
+                })
             }
+            .await;
 
-            let attempt_start = Instant::now();
-            match self
-                .client
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .header("Content-Type", "application/json")
-                .json(body)
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => return Ok(resp),
-                Ok(resp) if resp.status().as_u16() == 429 => {
-                    let body_text = resp.text().await.unwrap_or_default();
-                    let msg = format!("rate limited (429): {body_text}");
-                    self.report_llm_error(attempt, &msg);
-                    last_err = Some(anyhow::anyhow!(msg));
-                    continue;
-                }
-                Ok(resp) if resp.status().is_server_error() => {
-                    let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
-                    let msg = format!("server error {status}: {body}");
-                    self.report_llm_error(attempt, &msg);
-                    last_err = Some(anyhow::anyhow!(msg));
-                    continue;
-                }
-                Ok(resp) => {
-                    let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
-                    let msg = format!("LLM error {status}: {body}");
-                    self.report_llm_error(attempt, &msg);
-                    anyhow::bail!(msg);
-                }
+            match outcome {
+                Ok(v) => return Ok(v),
                 Err(e) => {
-                    let classified = classify_reqwest_error(e, attempt_start.elapsed());
-                    self.report_llm_error(attempt, &classified.to_string());
-                    if classified.is_retryable() {
-                        last_err = Some(anyhow::Error::new(classified));
-                        continue;
-                    }
-                    return Err(anyhow::Error::new(classified));
+                    self.handle_failure(&mut state, e).await?;
                 }
             }
         }
+    }
 
-        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("LLM request failed")))
+    /// Report the failure to tracing/Sentry, then advance the retry state.
+    /// On exhaustion or a fatal error this returns `Err(_)`; otherwise it
+    /// sleeps the computed backoff and returns `Ok(())` so the caller can
+    /// loop into the next attempt.
+    async fn handle_failure(&self, state: &mut RetryState, err: StreamError) -> Result<()> {
+        self.report_llm_error(state.attempt_num - 1, &err.to_string());
+        let Some(delay) = state.next_delay(&err) else {
+            return Err(anyhow::Error::new(err));
+        };
+        warn!(
+            provider = "openai-compatible",
+            model = %self.model,
+            attempt = state.attempt_num + 1,
+            max_attempts = state.budget.max_attempts,
+            backoff_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            escalated = state.budget.escalated,
+            "retrying LLM request"
+        );
+        sleep(delay).await;
+        state.advance();
+        Ok(())
+    }
+
+    /// POST the request once. On non-2xx, consume the body and return a
+    /// classified [`StreamError`]. On transport error, classify that too.
+    async fn post_or_classify(&self, body: &Value) -> StdResult<reqwest::Response, StreamError> {
+        let url = format!("{}/chat/completions", self.api_url);
+        let attempt_start = Instant::now();
+        match self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(body)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => Ok(resp),
+            Ok(resp) => {
+                let status = resp.status();
+                let body_text = resp.text().await.unwrap_or_default();
+                Err(classify_http_response(status, body_text))
+            }
+            Err(e) => Err(classify_reqwest_error(e, attempt_start.elapsed())),
+        }
     }
 
     /// Emit an error-level tracing event with structured Sentry context
@@ -249,25 +188,21 @@ impl LlmClient {
         &self,
         response: reqwest::Response,
         on_text: &mut (dyn FnMut(&str) + Send),
-    ) -> Result<StreamedResponse> {
+        emitted: &mut bool,
+    ) -> StdResult<StreamedResponse, StreamError> {
         let mut content = String::new();
         let mut tool_calls: Vec<PartialToolCall> = Vec::new();
         let mut finish_reason = None;
         let mut usage = None;
 
         let mut stream = response.bytes_stream();
-
         let mut buffer = String::new();
         let stream_start = Instant::now();
 
         while let Some(chunk) = stream.next().await {
             let chunk = match chunk {
                 Ok(c) => c,
-                Err(e) => {
-                    let classified = classify_reqwest_error(e, stream_start.elapsed());
-                    self.report_llm_error(0, &classified.to_string());
-                    return Err(anyhow::Error::new(classified).context("read SSE chunk"));
-                }
+                Err(e) => return Err(classify_reqwest_error(e, stream_start.elapsed())),
             };
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -312,6 +247,7 @@ impl LlmClient {
                     {
                         content.push_str(text);
                         on_text(text);
+                        *emitted = true;
                     }
 
                     if let Some(Delta {
@@ -322,6 +258,7 @@ impl LlmClient {
                         for tc_delta in deltas {
                             accumulate_tool_call(&mut tool_calls, tc_delta);
                         }
+                        *emitted = true;
                     }
                 }
             }
@@ -407,98 +344,5 @@ impl LlmService for LlmClient {
 
     async fn complete(&self, messages: &[Message]) -> Result<CompletionResponse> {
         self.complete(messages).await
-    }
-}
-
-#[cfg(test)]
-mod classify_tests {
-    use super::{classify_reqwest_error, StreamError};
-    use std::error::Error as _;
-    use std::time::Duration;
-    use wiremock::matchers::method;
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    /// Trigger a real connect error by hitting a closed local port.
-    async fn connect_error() -> reqwest::Error {
-        reqwest::Client::new()
-            .get("http://127.0.0.1:1/")
-            .send()
-            .await
-            .expect_err("connect to :1 should fail")
-    }
-
-    /// Trigger a real timeout error with an unroutable address and a tiny
-    /// deadline.
-    async fn timeout_error() -> reqwest::Error {
-        reqwest::Client::builder()
-            .timeout(Duration::from_millis(1))
-            .build()
-            .unwrap()
-            .get("http://10.255.255.1/")
-            .send()
-            .await
-            .expect_err("unroutable + 1ms timeout should fail")
-    }
-
-    #[tokio::test]
-    async fn classifies_connect_error_as_retryable() {
-        let e = connect_error().await;
-        let classified = classify_reqwest_error(e, Duration::from_millis(500));
-        assert!(classified.is_retryable());
-        let msg = classified.to_string();
-        assert!(
-            msg.contains("Connection error") && msg.contains("0.5s"),
-            "unexpected message: {msg}"
-        );
-        // Source chain must be preserved.
-        assert!(classified.source().is_some());
-    }
-
-    #[tokio::test]
-    async fn classifies_timeout_as_retryable() {
-        let e = timeout_error().await;
-        // Not every platform maps this to is_timeout (some hit is_connect
-        // first); either way the classifier must produce Retryable with
-        // the elapsed marker.
-        let classified = classify_reqwest_error(e, Duration::from_millis(1200));
-        assert!(classified.is_retryable());
-        assert!(classified.to_string().contains("1.2s"));
-    }
-
-    #[tokio::test]
-    async fn classifies_4xx_status_as_fatal() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(401))
-            .mount(&server)
-            .await;
-
-        let e = reqwest::get(server.uri())
-            .await
-            .unwrap()
-            .error_for_status()
-            .expect_err("401 should be error_for_status err");
-        let classified = classify_reqwest_error(e, Duration::from_millis(100));
-        assert!(matches!(classified, StreamError::Fatal { .. }));
-        assert!(!classified.is_retryable());
-        assert!(classified.to_string().contains("401"));
-    }
-
-    #[tokio::test]
-    async fn classifies_5xx_status_as_retryable() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(503))
-            .mount(&server)
-            .await;
-
-        let e = reqwest::get(server.uri())
-            .await
-            .unwrap()
-            .error_for_status()
-            .expect_err("503 should be error_for_status err");
-        let classified = classify_reqwest_error(e, Duration::from_millis(100));
-        assert!(classified.is_retryable());
-        assert!(classified.to_string().contains("503"));
     }
 }

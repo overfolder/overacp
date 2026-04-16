@@ -281,3 +281,159 @@ async fn test_no_retry_on_400() {
         err_msg
     );
 }
+
+/// Default budget is 2 retries (3 attempts total) when no transient keyword
+/// is observed in the error body. Status phrase "Internal Server Error" and
+/// body "upstream error" together contain none of the escalation keywords.
+#[tokio::test]
+async fn test_default_budget_stops_at_3_attempts() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("upstream error"))
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let client = LlmClient::new(&server.uri(), "test-key", "test-model");
+    let messages = vec![user_msg("Hi")];
+    let result = client.complete(&messages).await;
+
+    assert!(result.is_err(), "expected exhaustion after 3 attempts");
+    // wiremock asserts `expect(3)` on drop.
+}
+
+/// Mid-stream connection drop before any SSE frame is emitted: the retry is
+/// safe (no partial output delivered) so the client transparently retries
+/// the whole request.
+#[tokio::test]
+async fn test_mid_stream_retries_when_no_text_emitted() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // First connection: reply 200 + chunked headers, then close with no data
+    // frames. Second connection: reply with a complete valid SSE body.
+    let server = tokio::spawn(async move {
+        // First attempt — drop socket before any `data:` frame.
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let mut buf = vec![0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            let resp = "HTTP/1.1 200 OK\r\n\
+                        Content-Type: text/event-stream\r\n\
+                        Transfer-Encoding: chunked\r\n\
+                        \r\n";
+            let _ = sock.write_all(resp.as_bytes()).await;
+            // Drop mid-stream before any `data:` line.
+            drop(sock);
+        }
+
+        // Second attempt — valid full SSE body with Content-Length.
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let mut buf = vec![0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            let body =
+                "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}\n\n\
+                        data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n\
+                        data: [DONE]\n\n";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: text/event-stream\r\n\
+                 Content-Length: {}\r\n\
+                 \r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        }
+    });
+
+    let url = format!("http://{addr}");
+    let client = LlmClient::new(&url, "test-key", "test-model");
+    let messages = vec![user_msg("Hi")];
+
+    let mut collected = Vec::new();
+    let result = client
+        .stream_completion(&messages, &[], &mut |t| collected.push(t.to_string()))
+        .await
+        .expect("second attempt should succeed");
+
+    assert_eq!(result.message.content.unwrap().as_text().unwrap(), "ok");
+    // Only the successful second attempt should have emitted any text.
+    assert_eq!(collected, vec!["ok"]);
+    server.await.unwrap();
+}
+
+/// Mid-stream failure AFTER a text delta has been delivered: retrying would
+/// cause duplicate tokens at the caller, so the client downgrades the error
+/// to fatal and surfaces it without another attempt.
+#[tokio::test]
+async fn test_mid_stream_fatal_after_partial_text() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Count incoming connections — must be exactly 1. If the client retries
+    // the request (which it should NOT after partial output), the counter
+    // will reach 2 and the assertion below will fail.
+    let connect_count = Arc::new(AtomicUsize::new(0));
+    let connect_count_task = connect_count.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                connect_count_task.fetch_add(1, Ordering::SeqCst);
+                let mut buf = vec![0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let body = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"}}]}\n\n";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\n\
+                     Content-Type: text/event-stream\r\n\
+                     Transfer-Encoding: chunked\r\n\
+                     \r\n\
+                     {len:x}\r\n\
+                     {body}",
+                    len = body.len(),
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                // Drop socket mid-stream after the one delta chunk.
+                drop(sock);
+            }
+        }
+    });
+
+    let url = format!("http://{addr}");
+    let client = LlmClient::new(&url, "test-key", "test-model");
+    let messages = vec![user_msg("Hi")];
+
+    let mut collected = Vec::new();
+    let result = client
+        .stream_completion(&messages, &[], &mut |t| collected.push(t.to_string()))
+        .await;
+
+    let err = match result {
+        Err(e) => e,
+        Ok(_) => panic!("mid-stream error after partial output should be fatal"),
+    };
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("mid-stream error after partial output emitted"),
+        "unexpected error: {err_msg}"
+    );
+    // The partial delta must have been delivered to the caller before the
+    // failure, and no retry should have happened.
+    assert_eq!(collected, vec!["partial"]);
+    assert_eq!(
+        connect_count.load(Ordering::SeqCst),
+        1,
+        "expected exactly one HTTP connection; got a retry"
+    );
+
+    server.abort();
+}
