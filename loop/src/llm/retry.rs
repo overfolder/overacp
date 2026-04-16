@@ -17,17 +17,24 @@ use std::time::Duration;
 
 /// Classifies LLM transport / HTTP errors so callers can decide whether to
 /// retry.
+///
+/// `body` carries the raw response body text for HTTP-level errors so that
+/// the keyword-escalation pass inspects only the upstream's payload, not the
+/// HTTP status phrase (which on 503 already contains "Service Unavailable"
+/// and would otherwise force every 503 to escalate regardless of cause).
 #[derive(Debug)]
 pub(super) enum StreamError {
     /// Transient failure (timeout, connection reset, 429/5xx) — caller
     /// should retry with backoff.
     Retryable {
         message: String,
+        body: Option<String>,
         source: Box<dyn StdError + Send + Sync>,
     },
     /// Permanent failure (auth error, bad request) — retrying will not help.
     Fatal {
         message: String,
+        body: Option<String>,
         source: Box<dyn StdError + Send + Sync>,
     },
 }
@@ -61,6 +68,17 @@ impl StreamError {
         }
     }
 
+    /// Text the keyword classifier should inspect when deciding whether to
+    /// escalate the retry budget. Prefers the raw response body (for HTTP
+    /// errors) and falls back to the formatted message (for transport errors
+    /// that have no body).
+    pub(super) fn keyword_haystack(&self) -> &str {
+        match self {
+            Self::Retryable { body: Some(b), .. } | Self::Fatal { body: Some(b), .. } => b,
+            Self::Retryable { message, .. } | Self::Fatal { message, .. } => message,
+        }
+    }
+
     /// Convert a retryable error into a fatal one wrapping itself, prefixed
     /// with `prefix`. Used when partial output has already been streamed and
     /// retrying would duplicate tokens at the caller.
@@ -71,6 +89,7 @@ impl StreamError {
         let message = format!("{prefix}: {}", self.message());
         Self::Fatal {
             message,
+            body: None,
             source: Box::new(self),
         }
     }
@@ -82,11 +101,13 @@ pub(super) fn classify_reqwest_error(e: reqwest::Error, elapsed: Duration) -> St
     if e.is_timeout() {
         StreamError::Retryable {
             message: format!("Stream read timed out after {elapsed_s:.1}s: {e}"),
+            body: None,
             source: Box::new(e),
         }
     } else if e.is_connect() {
         StreamError::Retryable {
             message: format!("Connection error during stream after {elapsed_s:.1}s: {e}"),
+            body: None,
             source: Box::new(e),
         }
     } else if e.is_body() || e.is_decode() {
@@ -94,37 +115,52 @@ pub(super) fn classify_reqwest_error(e: reqwest::Error, elapsed: Duration) -> St
             message: format!(
                 "Stream body error (possible connection reset) after {elapsed_s:.1}s: {e}"
             ),
+            body: None,
             source: Box::new(e),
         }
     } else if let Some(status) = e.status() {
         if status.is_server_error() {
             StreamError::Retryable {
                 message: format!("Server error {status} during stream after {elapsed_s:.1}s: {e}"),
+                body: None,
                 source: Box::new(e),
             }
         } else {
             StreamError::Fatal {
                 message: format!("Client error {status} during stream after {elapsed_s:.1}s: {e}"),
+                body: None,
                 source: Box::new(e),
             }
         }
     } else {
         StreamError::Retryable {
             message: format!("Stream error after {elapsed_s:.1}s: {e}"),
+            body: None,
             source: Box::new(e),
         }
     }
 }
 
 /// Wrap a non-2xx HTTP response as a classified error. 429 and 5xx are
-/// retryable; other 4xx are fatal.
+/// retryable; other 4xx are fatal. The raw response body is preserved
+/// separately from the formatted display message so that keyword-based
+/// budget escalation only sees what the upstream actually said, not the
+/// HTTP status phrase.
 pub(super) fn classify_http_response(status: reqwest::StatusCode, body: String) -> StreamError {
     let message = format!("LLM HTTP {status}: {body}");
     let source = Box::new(io::Error::other(message.clone()));
     if status.as_u16() == 429 || status.is_server_error() {
-        StreamError::Retryable { message, source }
+        StreamError::Retryable {
+            message,
+            body: Some(body),
+            source,
+        }
     } else {
-        StreamError::Fatal { message, source }
+        StreamError::Fatal {
+            message,
+            body: Some(body),
+            source,
+        }
     }
 }
 
@@ -182,11 +218,11 @@ impl RetryBudget {
     }
 }
 
-/// If `err`'s message contains a transient-capacity keyword and `budget` is
-/// still the default, upgrade to escalated. Otherwise return `budget`
-/// unchanged.
+/// If `err`'s body (or formatted message, when there is no body) contains a
+/// transient-capacity keyword and `budget` is still the default, upgrade to
+/// escalated. Otherwise return `budget` unchanged.
 pub(super) fn escalate_if_transient(budget: RetryBudget, err: &StreamError) -> RetryBudget {
-    if !budget.escalated && contains_transient_keyword(err.message()) {
+    if !budget.escalated && contains_transient_keyword(err.keyword_haystack()) {
         RetryBudget::escalated_budget()
     } else {
         budget
@@ -347,13 +383,41 @@ mod tests {
 
     #[test]
     fn escalation_skipped_without_keyword() {
-        // Use 502 Bad Gateway — its status phrase ("Bad Gateway") contains no
-        // transient-capacity keyword, so the body is the only signal.
         let budget = RetryBudget::default_budget();
         let err = classify_http_response(reqwest::StatusCode::BAD_GATEWAY, "upstream error".into());
         let same = escalate_if_transient(budget, &err);
         assert!(!same.escalated);
         assert_eq!(same.max_attempts, 3);
+    }
+
+    /// Regression: the HTTP status phrase "Service Unavailable" contains the
+    /// keyword "unavailable" but escalation must look only at the upstream
+    /// body, not the canned status text. A 503 with a non-capacity body
+    /// stays on the default budget.
+    #[test]
+    fn escalation_ignores_status_phrase_keywords() {
+        let budget = RetryBudget::default_budget();
+        let err = classify_http_response(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            "internal error".into(),
+        );
+        let same = escalate_if_transient(budget, &err);
+        assert!(
+            !same.escalated,
+            "503 with keyword-free body must not escalate via status phrase"
+        );
+        assert_eq!(same.max_attempts, 3);
+    }
+
+    /// Transport errors carry no body — fall back to the formatted message.
+    /// Connection errors (no keyword) must not escalate.
+    #[tokio::test]
+    async fn escalation_skipped_for_keywordless_transport_error() {
+        let e = connect_error().await;
+        let classified = classify_reqwest_error(e, Duration::from_millis(100));
+        let budget = RetryBudget::default_budget();
+        let same = escalate_if_transient(budget, &classified);
+        assert!(!same.escalated);
     }
 
     #[test]

@@ -109,6 +109,7 @@ impl LlmClient {
                     .map_err(|e| classify_reqwest_error(e, attempt_start.elapsed()))?;
                 serde_json::from_str::<CompletionResponse>(&text).map_err(|e| StreamError::Fatal {
                     message: format!("parse completion response: {e}"),
+                    body: None,
                     source: Box::new(e),
                 })
             }
