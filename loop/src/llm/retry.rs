@@ -229,11 +229,57 @@ pub(super) fn escalate_if_transient(budget: RetryBudget, err: &StreamError) -> R
     }
 }
 
+/// Mutable state driven by both `complete` and `stream_completion` retry
+/// loops. Tracks the active budget, the total attempt count (for the
+/// `max_attempts` cap), and a separate exponent index for backoff
+/// computation that resets when the budget escalates — so the first sleep
+/// under the escalated budget is its documented base delay (2s) rather than
+/// `base * 2^accumulated`.
+pub(super) struct RetryState {
+    pub(super) budget: RetryBudget,
+    pub(super) attempt_num: u32,
+    exponent_idx: u32,
+}
+
+impl RetryState {
+    pub(super) const fn new() -> Self {
+        Self {
+            budget: RetryBudget::default_budget(),
+            attempt_num: 1,
+            exponent_idx: 0,
+        }
+    }
+
+    /// Inspect the failure and decide whether to retry. On `Some(delay)` the
+    /// caller should sleep that long, then call [`Self::advance`] before the
+    /// next attempt. On `None` the error is fatal or the budget is exhausted.
+    pub(super) fn next_delay(&mut self, err: &StreamError) -> Option<Duration> {
+        let upgraded = escalate_if_transient(self.budget, err);
+        let escalated_now = upgraded.escalated && !self.budget.escalated;
+        self.budget = upgraded;
+
+        if !err.is_retryable() || self.attempt_num >= self.budget.max_attempts {
+            return None;
+        }
+
+        if escalated_now {
+            self.exponent_idx = 0;
+        }
+        Some(self.budget.delay_for(self.exponent_idx))
+    }
+
+    /// Bump the attempt and exponent counters after a sleep completes.
+    pub(super) fn advance(&mut self) {
+        self.attempt_num += 1;
+        self.exponent_idx += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         classify_http_response, classify_reqwest_error, contains_transient_keyword,
-        escalate_if_transient, RetryBudget, StreamError,
+        escalate_if_transient, RetryBudget, RetryState, StreamError,
     };
     use std::error::Error as _;
     use std::time::Duration;
@@ -437,5 +483,67 @@ mod tests {
         let still_fatal = err.into_fatal_with_prefix("ignored");
         assert!(!still_fatal.is_retryable());
         assert_eq!(still_fatal.message(), msg_before);
+    }
+
+    /// Retry-state walkthrough for the default budget alone — three attempts,
+    /// 500ms then 1s backoff, then exhaustion.
+    #[test]
+    fn retry_state_default_budget_walkthrough() {
+        let mut state = RetryState::new();
+        let err = || classify_http_response(reqwest::StatusCode::BAD_GATEWAY, "boom".into());
+
+        let d1 = state.next_delay(&err()).expect("attempt 1 → retry 1");
+        assert_eq!(d1, Duration::from_millis(500));
+        state.advance();
+
+        let d2 = state.next_delay(&err()).expect("attempt 2 → retry 2");
+        assert_eq!(d2, Duration::from_millis(1000));
+        state.advance();
+
+        // Attempt 3 fails — budget (3 max) is exhausted, no further retry.
+        assert!(state.next_delay(&err()).is_none());
+    }
+
+    /// Regression for Sentry PR feedback on #43: when escalation happens
+    /// mid-loop, the next sleep must be the escalated budget's *base* (2s),
+    /// not `base * 2^accumulated`.
+    #[test]
+    fn retry_state_resets_exponent_on_escalation() {
+        let mut state = RetryState::new();
+        let benign = classify_http_response(reqwest::StatusCode::BAD_GATEWAY, "boom".into());
+        let transient =
+            classify_http_response(reqwest::StatusCode::BAD_GATEWAY, "model overloaded".into());
+
+        // Attempt 1 (default budget): fails non-transiently → 500ms backoff.
+        let d1 = state.next_delay(&benign).unwrap();
+        assert_eq!(d1, Duration::from_millis(500));
+        assert!(!state.budget.escalated);
+        state.advance();
+
+        // Attempt 2: fails with a transient keyword. Budget escalates and the
+        // next backoff is the escalated base (2s), NOT 2s * 2 = 4s.
+        let d2 = state.next_delay(&transient).unwrap();
+        assert_eq!(d2, Duration::from_millis(2000));
+        assert!(state.budget.escalated);
+        state.advance();
+
+        // Attempt 3 onward: backoff doubles within the escalated budget.
+        let d3 = state.next_delay(&transient).unwrap();
+        assert_eq!(d3, Duration::from_millis(4000));
+        state.advance();
+
+        let d4 = state.next_delay(&transient).unwrap();
+        assert_eq!(d4, Duration::from_millis(8000));
+        state.advance();
+
+        // 5 attempts total under escalated → next call exhausts.
+        assert!(state.next_delay(&transient).is_none());
+    }
+
+    #[test]
+    fn retry_state_returns_none_on_fatal() {
+        let mut state = RetryState::new();
+        let fatal = classify_http_response(reqwest::StatusCode::BAD_REQUEST, "nope".into());
+        assert!(state.next_delay(&fatal).is_none());
     }
 }

@@ -9,9 +9,7 @@ use tracing::{debug, error, warn};
 use crate::traits::{LlmService, StreamedResponse};
 use tokio::time::sleep;
 
-use super::retry::{
-    classify_http_response, classify_reqwest_error, escalate_if_transient, RetryBudget, StreamError,
-};
+use super::retry::{classify_http_response, classify_reqwest_error, RetryState, StreamError};
 use super::{
     CompletionResponse, Content, Delta, FunctionCall, Message, Role, StreamEvent, ToolCall,
     ToolDefinition,
@@ -57,10 +55,8 @@ impl LlmClient {
             body["tools"] = serde_json::to_value(tools)?;
         }
 
-        let mut budget = RetryBudget::default_budget();
-        let mut retry_idx: u32 = 0;
+        let mut state = RetryState::new();
         loop {
-            let attempt_num = retry_idx + 1;
             let mut emitted = false;
             let outcome = match self.post_or_classify(&body).await {
                 Ok(resp) => self.process_stream(resp, on_text, &mut emitted).await,
@@ -75,15 +71,7 @@ impl LlmClient {
                             "mid-stream error after partial output emitted; cannot retry safely",
                         );
                     }
-                    if let Some(next) = self
-                        .handle_failure(retry_idx, attempt_num, budget, e)
-                        .await?
-                    {
-                        budget = next.budget;
-                        retry_idx += 1;
-                        continue;
-                    }
-                    unreachable!("handle_failure returns Err on exhaustion");
+                    self.handle_failure(&mut state, e).await?;
                 }
             }
         }
@@ -96,10 +84,8 @@ impl LlmClient {
             "messages": messages,
         });
 
-        let mut budget = RetryBudget::default_budget();
-        let mut retry_idx: u32 = 0;
+        let mut state = RetryState::new();
         loop {
-            let attempt_num = retry_idx + 1;
             let outcome: StdResult<CompletionResponse, StreamError> = async {
                 let resp = self.post_or_classify(&body).await?;
                 let attempt_start = Instant::now();
@@ -118,50 +104,33 @@ impl LlmClient {
             match outcome {
                 Ok(v) => return Ok(v),
                 Err(e) => {
-                    if let Some(next) = self
-                        .handle_failure(retry_idx, attempt_num, budget, e)
-                        .await?
-                    {
-                        budget = next.budget;
-                        retry_idx += 1;
-                        continue;
-                    }
-                    unreachable!("handle_failure returns Err on exhaustion");
+                    self.handle_failure(&mut state, e).await?;
                 }
             }
         }
     }
 
-    /// Report the failure, upgrade the budget if the body names a transient
-    /// cause, and either return `Ok(Some(next))` with a fresh budget (caller
-    /// continues the loop) or `Err(_)` when the error is fatal / budget
-    /// exhausted.
-    async fn handle_failure(
-        &self,
-        retry_idx: u32,
-        attempt_num: u32,
-        budget: RetryBudget,
-        err: StreamError,
-    ) -> Result<Option<NextAttempt>> {
-        self.report_llm_error(retry_idx, &err.to_string());
-        let budget = escalate_if_transient(budget, &err);
-
-        if !err.is_retryable() || attempt_num >= budget.max_attempts {
+    /// Report the failure to tracing/Sentry, then advance the retry state.
+    /// On exhaustion or a fatal error this returns `Err(_)`; otherwise it
+    /// sleeps the computed backoff and returns `Ok(())` so the caller can
+    /// loop into the next attempt.
+    async fn handle_failure(&self, state: &mut RetryState, err: StreamError) -> Result<()> {
+        self.report_llm_error(state.attempt_num - 1, &err.to_string());
+        let Some(delay) = state.next_delay(&err) else {
             return Err(anyhow::Error::new(err));
-        }
-
-        let delay = budget.delay_for(retry_idx);
+        };
         warn!(
             provider = "openai-compatible",
             model = %self.model,
-            attempt = attempt_num + 1,
-            max_attempts = budget.max_attempts,
+            attempt = state.attempt_num + 1,
+            max_attempts = state.budget.max_attempts,
             backoff_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
-            escalated = budget.escalated,
+            escalated = state.budget.escalated,
             "retrying LLM request"
         );
         sleep(delay).await;
-        Ok(Some(NextAttempt { budget }))
+        state.advance();
+        Ok(())
     }
 
     /// POST the request once. On non-2xx, consume the body and return a
@@ -330,10 +299,6 @@ impl LlmClient {
             usage,
         })
     }
-}
-
-struct NextAttempt {
-    budget: RetryBudget,
 }
 
 struct PartialToolCall {
