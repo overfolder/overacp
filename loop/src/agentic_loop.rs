@@ -9,7 +9,9 @@ use crate::llm::{
     parse_tool_arguments, Content, ContentBlock, Message, ParsedArguments, Role, StopReason,
     ToolContent, TypedBlock, Usage,
 };
-use crate::observability::{GenerationParams, SessionTrace, ToolSpanParams};
+use crate::observability::{
+    build_context_snapshot, GenerationParams, SessionTrace, ToolSpanParams,
+};
 use crate::tools::{ToolOutput, ToolRegistry};
 use crate::traits::{AcpService, LlmService};
 
@@ -30,6 +32,9 @@ pub struct LoopConfig {
     /// Model name recorded on Langfuse generation spans. Free-form label;
     /// the trace is untouched when the `SessionTrace` is disabled.
     pub model: String,
+    /// When true, attach a redacted chat-log snapshot to Langfuse
+    /// generation `input`. Off by default.
+    pub langfuse_capture_input: bool,
 }
 
 pub async fn run(
@@ -41,11 +46,7 @@ pub async fn run(
     trace: &SessionTrace,
 ) -> Result<()> {
     let start = Instant::now();
-    let mut total_usage = Usage {
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-    };
+    let mut total_usage = Usage::default();
     let mut silent_turns = 0u32;
     let mut last_heartbeat = Instant::now();
     let mut response_text = String::new();
@@ -109,6 +110,15 @@ pub async fn run(
         let mut text_deltas = Vec::new();
         let tools = registry.definitions();
         let message_count = messages.len();
+        // Pre-build the input preview once per LLM call so both the
+        // error and success branches below share it without cloning
+        // messages twice. Cheap when the flag is off (one `json!`
+        // literal); only touches message content when opted in.
+        let input_preview = if config.langfuse_capture_input {
+            build_context_snapshot(messages)
+        } else {
+            json!({"message_count": message_count})
+        };
         let lf_start = Utc::now();
         let streamed = llm
             .stream_completion(messages, &tools, &mut |text| {
@@ -137,7 +147,7 @@ pub async fn run(
                 trace.record_generation(GenerationParams {
                     model: config.model.clone(),
                     message_count,
-                    input_preview: json!({"message_count": message_count}),
+                    input_preview: input_preview.clone(),
                     output_text: None,
                     stop_reason: "error".into(),
                     prompt_tokens: 0,
@@ -167,7 +177,7 @@ pub async fn run(
         trace.record_generation(GenerationParams {
             model: config.model.clone(),
             message_count,
-            input_preview: json!({"message_count": message_count}),
+            input_preview,
             output_text: (!streamed_text.is_empty()).then(|| streamed_text.clone()),
             stop_reason: stop_reason_str.into(),
             prompt_tokens: streamed
@@ -180,11 +190,19 @@ pub async fn run(
                 .as_ref()
                 .map(|u| u.completion_tokens)
                 .unwrap_or(0),
-            cost: 0.0,
+            cost: streamed.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
             start_time: lf_start,
             end_time: lf_end,
-            cache_read_tokens: 0,
-            cache_creation_tokens: 0,
+            cache_read_tokens: streamed
+                .usage
+                .as_ref()
+                .map(|u| u.cache_read_tokens)
+                .unwrap_or(0),
+            cache_creation_tokens: streamed
+                .usage
+                .as_ref()
+                .map(|u| u.cache_creation_tokens)
+                .unwrap_or(0),
             level: None,
             status_message: None,
         });
@@ -197,6 +215,9 @@ pub async fn run(
             total_usage.prompt_tokens += usage.prompt_tokens;
             total_usage.completion_tokens += usage.completion_tokens;
             total_usage.total_tokens += usage.total_tokens;
+            total_usage.cost += usage.cost;
+            total_usage.cache_read_tokens += usage.cache_read_tokens;
+            total_usage.cache_creation_tokens += usage.cache_creation_tokens;
             let _ = acp.quota_update(usage.prompt_tokens, usage.completion_tokens);
         }
 
@@ -318,7 +339,12 @@ pub async fn run(
         error!("Failed to emit turn/end: {}", e);
     }
 
-    trace.finalize(total_usage.total_tokens, 0.0, tool_count, &response_text);
+    trace.finalize(
+        total_usage.total_tokens,
+        total_usage.cost,
+        tool_count,
+        &response_text,
+    );
 
     Ok(())
 }

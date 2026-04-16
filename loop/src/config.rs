@@ -24,6 +24,10 @@ pub struct Config {
     pub langfuse_host: String,
     /// Tag attached to every Langfuse observation. Defaults to `local`.
     pub langfuse_environment: String,
+    /// Opt-in: attach a redacted chat-log snapshot to the Langfuse
+    /// generation `input` field. Off by default so prompt content
+    /// stays local unless the operator explicitly opts in.
+    pub langfuse_capture_input: bool,
 }
 
 impl Config {
@@ -88,6 +92,11 @@ impl Config {
         let langfuse_environment =
             env::var("LANGFUSE_ENVIRONMENT").unwrap_or_else(|_| "local".into());
 
+        let langfuse_capture_input = env::var("LANGFUSE_CAPTURE_INPUT")
+            .ok()
+            .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+
         Ok(Self {
             llm_api_key,
             llm_api_url,
@@ -104,6 +113,7 @@ impl Config {
             langfuse_secret_key,
             langfuse_host,
             langfuse_environment,
+            langfuse_capture_input,
         })
     }
 }
@@ -131,6 +141,7 @@ mod tests {
             "LANGFUSE_SECRET_KEY",
             "LANGFUSE_HOST",
             "LANGFUSE_ENVIRONMENT",
+            "LANGFUSE_CAPTURE_INPUT",
         ] {
             env::remove_var(key);
         }
@@ -166,6 +177,7 @@ mod tests {
         assert!(cfg.langfuse_secret_key.is_none());
         assert_eq!(cfg.langfuse_host, "https://cloud.langfuse.com");
         assert_eq!(cfg.langfuse_environment, "local");
+        assert!(!cfg.langfuse_capture_input);
         cleanup_env();
     }
 
@@ -183,6 +195,31 @@ mod tests {
         assert_eq!(cfg.langfuse_secret_key.as_deref(), Some("sk-xyz"));
         assert_eq!(cfg.langfuse_host, "https://self.hosted.langfuse");
         assert_eq!(cfg.langfuse_environment, "prod");
+        cleanup_env();
+    }
+
+    #[test]
+    #[serial]
+    fn test_langfuse_capture_input_toggle() {
+        cleanup_env();
+        env::set_var("LLM_API_KEY", "test");
+        for (val, expected) in [
+            ("1", true),
+            ("true", true),
+            ("TRUE", true),
+            ("yes", true),
+            ("0", false),
+            ("false", false),
+            ("bogus", false),
+            ("", false),
+        ] {
+            env::set_var("LANGFUSE_CAPTURE_INPUT", val);
+            let cfg = Config::from_env().unwrap();
+            assert_eq!(
+                cfg.langfuse_capture_input, expected,
+                "LANGFUSE_CAPTURE_INPUT={val:?}"
+            );
+        }
         cleanup_env();
     }
 

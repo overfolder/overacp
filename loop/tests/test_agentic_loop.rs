@@ -178,6 +178,7 @@ fn make_text_response(text: &str, stop: StopReason) -> Result<StreamedResponse> 
             prompt_tokens: 10,
             completion_tokens: 5,
             total_tokens: 15,
+            ..Default::default()
         }),
     })
 }
@@ -202,6 +203,7 @@ fn make_tool_call_response(tool_name: &str, arguments: &str) -> Result<StreamedR
             prompt_tokens: 10,
             completion_tokens: 5,
             total_tokens: 15,
+            ..Default::default()
         }),
     })
 }
@@ -211,6 +213,7 @@ fn default_config() -> LoopConfig {
         max_iterations: 10,
         timeout: Duration::from_secs(30),
         model: "test-model".into(),
+        langfuse_capture_input: false,
     }
 }
 
@@ -422,6 +425,7 @@ async fn test_timeout() {
         max_iterations: 10,
         timeout: Duration::from_millis(0),
         model: "test-model".into(),
+        langfuse_capture_input: false,
     };
 
     run(
@@ -539,6 +543,7 @@ async fn test_wind_down_injects_system_message_when_iterations_remaining_equals_
         max_iterations: 5,
         timeout: Duration::from_secs(30),
         model: "test-model".into(),
+        langfuse_capture_input: false,
     };
 
     run(
@@ -587,6 +592,7 @@ async fn test_silence_nudge_injected_after_three_silent_turns() {
                 prompt_tokens: 1,
                 completion_tokens: 0,
                 total_tokens: 1,
+                ..Default::default()
             }),
         })
     }

@@ -624,6 +624,7 @@ mod tests {
             prompt_tokens: 10,
             completion_tokens: 5,
             total_tokens: 15,
+            ..Default::default()
         };
         acp.turn_end(&messages, &usage).unwrap();
 
@@ -679,6 +680,7 @@ mod tests {
             prompt_tokens: 100,
             completion_tokens: 50,
             total_tokens: 150,
+            ..Default::default()
         };
         acp.turn_end(&messages, &usage).unwrap();
 
@@ -706,6 +708,7 @@ mod tests {
             prompt_tokens: 100,
             completion_tokens: 50,
             total_tokens: 150,
+            ..Default::default()
         };
         acp.turn_end(&messages, &usage).unwrap();
 

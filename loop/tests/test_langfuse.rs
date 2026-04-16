@@ -31,6 +31,7 @@ fn test_config(host: &str, public: Option<&str>, secret: Option<&str>) -> Config
         langfuse_secret_key: secret.map(str::to_string),
         langfuse_host: host.to_string(),
         langfuse_environment: "test".into(),
+        langfuse_capture_input: false,
     }
 }
 
@@ -119,7 +120,7 @@ async fn record_generation_success_posts_generation_create() {
         stop_reason: "stop".into(),
         prompt_tokens: 100,
         completion_tokens: 25,
-        cost: 0.0,
+        cost: 0.012_345,
         start_time: now - chrono::Duration::milliseconds(200),
         end_time: now,
         cache_read_tokens: 80,
@@ -140,9 +141,53 @@ async fn record_generation_success_posts_generation_create() {
     assert_eq!(body["metadata"]["stop_reason"], "stop");
     assert_eq!(body["metadata"]["cache_read_tokens"], 80);
     assert_eq!(body["metadata"]["cache_creation_tokens"], 5);
+    // OpenRouter `usage.cost` must round-trip into metadata.cost_usd.
+    let cost = body["metadata"]["cost_usd"].as_f64().unwrap();
+    assert!((cost - 0.012_345).abs() < 1e-9, "unexpected cost: {cost}");
     // Success path — no level / statusMessage fields.
     assert!(body.get("level").is_none());
     assert!(body.get("statusMessage").is_none());
+}
+
+/// When `LANGFUSE_CAPTURE_INPUT=1` the agentic loop substitutes a
+/// `Value::String` chat-log snapshot for the placeholder JSON object.
+/// Verify that whichever shape the caller passes round-trips verbatim
+/// into the span `input` field.
+#[tokio::test]
+async fn generation_input_preview_string_roundtrips() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/public/ingestion"))
+        .respond_with(ResponseTemplate::new(207))
+        .mount(&server)
+        .await;
+
+    let cfg = test_config(&server.uri(), Some("pk"), Some("sk"));
+    let tracer = LangfuseTracer::new(&cfg);
+    let trace = tracer.start_session("s".into());
+
+    let snapshot = "<2 more messages...>\n[USER]: hi there\n[AGENT]: hello";
+    let now = Utc::now();
+    trace.record_generation(GenerationParams {
+        model: "gpt-4".into(),
+        message_count: 4,
+        input_preview: Value::String(snapshot.into()),
+        output_text: Some("ok".into()),
+        stop_reason: "stop".into(),
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        cost: 0.0,
+        start_time: now - chrono::Duration::milliseconds(10),
+        end_time: now,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        level: None,
+        status_message: None,
+    });
+
+    let reqs = wait_for_requests(&server, 1).await;
+    let body = batch_body(&reqs[0]);
+    assert_eq!(body["input"], snapshot);
 }
 
 #[tokio::test]

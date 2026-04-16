@@ -222,12 +222,70 @@ pub struct FunctionCallDelta {
     pub arguments: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct Usage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     #[serde(default)]
     pub total_tokens: u64,
+    /// USD cost reported by OpenRouter (top-level `usage.cost`).
+    /// Zero when the provider doesn't populate it.
+    #[serde(default)]
+    pub cost: f64,
+    /// Tokens served from prompt cache. Merged from Anthropic's flat
+    /// `cache_read_input_tokens` and OpenAI's nested
+    /// `prompt_tokens_details.cached_tokens` — we take the max since
+    /// different providers populate different fields.
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    /// Tokens written to prompt cache (Anthropic-only field
+    /// `cache_creation_input_tokens`).
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+}
+
+// Custom Deserialize so both Anthropic-flat and OpenAI-nested cache
+// shapes collapse into the flat public `Usage`.
+impl<'de> Deserialize<'de> for Usage {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize, Default)]
+        struct Raw {
+            #[serde(default)]
+            prompt_tokens: u64,
+            #[serde(default)]
+            completion_tokens: u64,
+            #[serde(default)]
+            total_tokens: u64,
+            #[serde(default)]
+            cost: f64,
+            #[serde(default)]
+            cache_read_input_tokens: u64,
+            #[serde(default)]
+            cache_creation_input_tokens: u64,
+            #[serde(default)]
+            prompt_tokens_details: Option<PromptTokensDetails>,
+        }
+
+        #[derive(Deserialize, Default)]
+        struct PromptTokensDetails {
+            #[serde(default)]
+            cached_tokens: u64,
+        }
+
+        let raw = Raw::deserialize(de)?;
+        let nested_cached = raw
+            .prompt_tokens_details
+            .as_ref()
+            .map_or(0, |d| d.cached_tokens);
+        Ok(Usage {
+            prompt_tokens: raw.prompt_tokens,
+            completion_tokens: raw.completion_tokens,
+            total_tokens: raw.total_tokens,
+            cost: raw.cost,
+            cache_read_tokens: raw.cache_read_input_tokens.max(nested_cached),
+            cache_creation_tokens: raw.cache_creation_input_tokens,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -434,5 +492,63 @@ mod tests {
         let without: Usage =
             serde_json::from_value(json!({"prompt_tokens":10,"completion_tokens":5})).unwrap();
         assert_eq!(without.total_tokens, 0);
+    }
+
+    #[test]
+    fn usage_deser_cost_and_cache_absent() {
+        let u: Usage =
+            serde_json::from_value(json!({"prompt_tokens": 10, "completion_tokens": 5})).unwrap();
+        assert_eq!(u.cost, 0.0);
+        assert_eq!(u.cache_read_tokens, 0);
+        assert_eq!(u.cache_creation_tokens, 0);
+    }
+
+    #[test]
+    fn usage_deser_anthropic_flat_cache() {
+        let u: Usage = serde_json::from_value(json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "cost": 0.0123,
+            "cache_read_input_tokens": 80,
+            "cache_creation_input_tokens": 30,
+        }))
+        .unwrap();
+        assert!((u.cost - 0.0123).abs() < 1e-9);
+        assert_eq!(u.cache_read_tokens, 80);
+        assert_eq!(u.cache_creation_tokens, 30);
+    }
+
+    #[test]
+    fn usage_deser_openai_nested_cache() {
+        let u: Usage = serde_json::from_value(json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "prompt_tokens_details": { "cached_tokens": 42 },
+        }))
+        .unwrap();
+        assert_eq!(u.cache_read_tokens, 42);
+        assert_eq!(u.cache_creation_tokens, 0);
+    }
+
+    #[test]
+    fn usage_deser_both_shapes_picks_max() {
+        let u: Usage = serde_json::from_value(json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "cache_read_input_tokens": 10,
+            "prompt_tokens_details": { "cached_tokens": 50 },
+        }))
+        .unwrap();
+        // max(flat=10, nested=50) = 50
+        assert_eq!(u.cache_read_tokens, 50);
+
+        let u2: Usage = serde_json::from_value(json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "cache_read_input_tokens": 77,
+            "prompt_tokens_details": { "cached_tokens": 50 },
+        }))
+        .unwrap();
+        assert_eq!(u2.cache_read_tokens, 77);
     }
 }
