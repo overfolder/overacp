@@ -338,6 +338,7 @@ mod tests {
             langfuse_secret_key: secret.map(str::to_string),
             langfuse_host: "https://cloud.langfuse.com".into(),
             langfuse_environment: "test".into(),
+            langfuse_capture_input: false,
         }
     }
 

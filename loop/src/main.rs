@@ -177,6 +177,7 @@ async fn run(config: Config) -> Result<()> {
         max_iterations: config.max_iterations,
         timeout: Duration::from_secs(config.timeout_minutes * 60),
         model: config.model.clone(),
+        langfuse_capture_input: config.langfuse_capture_input,
     };
 
     let tracer = LangfuseTracer::new(&config);
