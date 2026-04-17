@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::Result;
 use tracing::info;
 
@@ -26,7 +28,8 @@ pub async fn compact_messages(
     let system_msg = messages.first().filter(|m| m.role == Role::System).cloned();
 
     let start = if system_msg.is_some() { 1 } else { 0 };
-    let split_point = messages.len().saturating_sub(keep_recent);
+    let proposed = messages.len().saturating_sub(keep_recent);
+    let split_point = find_safe_split(messages, start, proposed);
 
     if split_point <= start {
         return Ok(messages.to_vec());
@@ -68,6 +71,43 @@ pub async fn compact_messages(
     result.extend_from_slice(recent);
 
     Ok(result)
+}
+
+/// Walk the proposed split backward until no tool_call in
+/// `messages[start..split]` has its matching `Role::Tool` response
+/// outside that range. Keeps assistant-with-tool_calls and their
+/// responses together across the compaction boundary — providers
+/// reject histories with dangling `tool_call_id`s.
+fn find_safe_split(messages: &[Message], start: usize, proposed: usize) -> usize {
+    let mut split = proposed.min(messages.len());
+    while split > start && has_straddling_pair(messages, start, split) {
+        split -= 1;
+    }
+    split
+}
+
+/// True if any tool call issued by an assistant in `messages[start..split]`
+/// has no matching `Role::Tool` response within the same slice.
+fn has_straddling_pair(messages: &[Message], start: usize, split: usize) -> bool {
+    let mut unanswered: HashSet<&str> = HashSet::new();
+    for msg in &messages[start..split] {
+        match msg.role {
+            Role::Assistant => {
+                if let Some(calls) = msg.tool_calls.as_ref() {
+                    for c in calls {
+                        unanswered.insert(c.id.as_str());
+                    }
+                }
+            }
+            Role::Tool => {
+                if let Some(id) = msg.tool_call_id.as_deref() {
+                    unanswered.remove(id);
+                }
+            }
+            _ => {}
+        }
+    }
+    !unanswered.is_empty()
 }
 
 async fn summarize(llm: &(impl LlmService + ?Sized), messages: &[Message]) -> Result<String> {
@@ -131,8 +171,55 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{ContentBlock, TypedBlock};
+    use crate::llm::{ContentBlock, FunctionCall, ToolCall, TypedBlock};
     use serde_json::json;
+
+    fn user(text: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: Some(Content::Text(text.into())),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    fn assistant_text(text: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: Some(Content::Text(text.into())),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    fn assistant_tools(ids: &[&str]) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: None,
+            tool_calls: Some(
+                ids.iter()
+                    .map(|id| ToolCall {
+                        id: (*id).into(),
+                        call_type: "function".into(),
+                        function: FunctionCall {
+                            name: "f".into(),
+                            arguments: "{}".into(),
+                        },
+                    })
+                    .collect(),
+            ),
+            tool_call_id: None,
+        }
+    }
+
+    fn tool_result(id: &str) -> Message {
+        Message {
+            role: Role::Tool,
+            content: Some(Content::Text(format!("result-{id}"))),
+            tool_calls: None,
+            tool_call_id: Some(id.into()),
+        }
+    }
 
     #[test]
     fn test_estimate_tokens_empty() {
@@ -159,6 +246,91 @@ mod tests {
             tool_call_id: None,
         };
         assert_eq!(estimate_tokens(&[msg]), 0);
+    }
+
+    #[test]
+    fn test_safe_split_no_tool_calls() {
+        let msgs = vec![
+            user("q1"),
+            assistant_text("a1"),
+            user("q2"),
+            assistant_text("a2"),
+            user("q3"),
+            assistant_text("a3"),
+        ];
+        // Proposed split anywhere is safe — no tool pairs to straddle.
+        assert_eq!(find_safe_split(&msgs, 0, 3), 3);
+        assert_eq!(find_safe_split(&msgs, 0, 5), 5);
+    }
+
+    #[test]
+    fn test_safe_split_walks_past_tool_pair() {
+        // [U, A(tc=a), T(a), done]   len=4
+        let msgs = vec![
+            user("q"),
+            assistant_tools(&["a"]),
+            tool_result("a"),
+            assistant_text("done"),
+        ];
+        // proposed=2: to_compact=[U, A(tc=a)], recent=[T(a), done].
+        // A(tc=a)'s response is in recent → unsafe. Walk back to 1:
+        // to_compact=[U], no tool calls → safe.
+        assert_eq!(find_safe_split(&msgs, 0, 2), 1);
+        // proposed=3 is already safe: both A(tc=a) and T(a) in to_compact.
+        assert_eq!(find_safe_split(&msgs, 0, 3), 3);
+    }
+
+    #[test]
+    fn test_safe_split_multi_tool_chain() {
+        // [U, A(tc=[a,b]), T(a), T(b), done]   len=5
+        let msgs = vec![
+            user("q"),
+            assistant_tools(&["a", "b"]),
+            tool_result("a"),
+            tool_result("b"),
+            assistant_text("done"),
+        ];
+        // proposed=3: A(tc=[a,b]) in compact, T(b) in recent → unsafe.
+        // Walk back past A(tc=...) until to_compact has no unanswered
+        // tool calls. Lands at 1 ([U] only).
+        assert_eq!(find_safe_split(&msgs, 0, 3), 1);
+        // proposed=4: to_compact includes both tool responses → safe.
+        assert_eq!(find_safe_split(&msgs, 0, 4), 4);
+    }
+
+    #[test]
+    fn test_safe_split_respects_start() {
+        // System prompt at index 0; tool pair straddles the only
+        // viable split — walk-back stops at `start` and returns it.
+        let msgs = vec![
+            Message {
+                role: Role::System,
+                content: Some(Content::Text("sys".into())),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            assistant_tools(&["a"]),
+            tool_result("a"),
+        ];
+        // proposed=2 unsafe; walk-back to 1 unsafe (A still in compact);
+        // walk-back stops at start=1 and returns 1.
+        // (Caller guards `split <= start` and skips compaction.)
+        assert_eq!(find_safe_split(&msgs, 1, 2), 1);
+    }
+
+    #[test]
+    fn test_safe_split_earlier_pair_unaffected() {
+        // An earlier completed tool pair shouldn't force walk-back if
+        // the proposed split lands cleanly.
+        // [U, A(tc=a), T(a), U', A'']   split at 4 → recent=[A'']
+        let msgs = vec![
+            user("q1"),
+            assistant_tools(&["a"]),
+            tool_result("a"),
+            user("q2"),
+            assistant_text("a2"),
+        ];
+        assert_eq!(find_safe_split(&msgs, 0, 4), 4);
     }
 
     #[test]
