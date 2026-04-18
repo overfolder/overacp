@@ -1,4 +1,4 @@
-//! `MessageQueue` — bounded per-agent buffer for `session/message`
+//! `InMemoryMessageQueue` — bounded per-agent buffer for `session/message`
 //! pushes that arrive while the agent's tunnel is disconnected.
 //!
 //! When `POST /agents/{id}/messages` runs against an agent that has
@@ -15,6 +15,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use dashmap::DashMap;
 use thiserror::Error;
 use uuid::Uuid;
@@ -34,20 +35,43 @@ pub enum QueueError {
     Full { agent_id: Uuid, capacity: usize },
 }
 
+/// Trait for message queue implementations. The in-memory default
+/// uses a bounded `VecDeque` per agent; the Redis backend uses a
+/// capped stream.
+#[async_trait]
+pub trait MessageQueueProvider: Send + Sync {
+    /// Append `frame` to `agent_id`'s buffer. Returns `Err(Full)`
+    /// if the buffer is at capacity.
+    async fn push(&self, agent_id: Uuid, frame: String) -> Result<(), QueueError>;
+
+    /// Drain `agent_id`'s buffer in FIFO order. Returns an empty
+    /// vec if there is nothing to drain.
+    async fn drain(&self, agent_id: Uuid) -> Vec<String>;
+
+    /// Number of buffered frames for `agent_id`.
+    async fn len(&self, agent_id: Uuid) -> usize;
+
+    /// Whether `agent_id`'s buffer is empty (or absent).
+    async fn is_empty(&self, agent_id: Uuid) -> bool;
+
+    /// Per-agent capacity ceiling.
+    fn capacity(&self) -> usize;
+}
+
 /// Per-agent bounded notification buffer. Cheap to clone.
 #[derive(Clone)]
-pub struct MessageQueue {
+pub struct InMemoryMessageQueue {
     inner: Arc<DashMap<Uuid, Mutex<VecDeque<String>>>>,
     per_agent_capacity: usize,
 }
 
-impl Default for MessageQueue {
+impl Default for InMemoryMessageQueue {
     fn default() -> Self {
         Self::new(DEFAULT_PER_AGENT_CAPACITY)
     }
 }
 
-impl MessageQueue {
+impl InMemoryMessageQueue {
     /// Build a queue with the given per-agent capacity.
     pub fn new(per_agent_capacity: usize) -> Self {
         Self {
@@ -114,6 +138,29 @@ impl MessageQueue {
     }
 }
 
+#[async_trait]
+impl MessageQueueProvider for InMemoryMessageQueue {
+    async fn push(&self, agent_id: Uuid, frame: String) -> Result<(), QueueError> {
+        InMemoryMessageQueue::push(self, agent_id, frame)
+    }
+
+    async fn drain(&self, agent_id: Uuid) -> Vec<String> {
+        InMemoryMessageQueue::drain(self, agent_id)
+    }
+
+    async fn len(&self, agent_id: Uuid) -> usize {
+        InMemoryMessageQueue::len(self, agent_id)
+    }
+
+    async fn is_empty(&self, agent_id: Uuid) -> bool {
+        InMemoryMessageQueue::is_empty(self, agent_id)
+    }
+
+    fn capacity(&self) -> usize {
+        self.per_agent_capacity
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,13 +171,13 @@ mod tests {
 
     #[test]
     fn empty_drain_returns_empty() {
-        let q = MessageQueue::default();
+        let q = InMemoryMessageQueue::default();
         assert!(q.drain(Uuid::new_v4()).is_empty());
     }
 
     #[test]
     fn push_then_drain_preserves_order() {
-        let q = MessageQueue::default();
+        let q = InMemoryMessageQueue::default();
         let id = Uuid::new_v4();
         q.push(id, frame(1)).unwrap();
         q.push(id, frame(2)).unwrap();
@@ -144,7 +191,7 @@ mod tests {
 
     #[test]
     fn drain_removes_slot() {
-        let q = MessageQueue::default();
+        let q = InMemoryMessageQueue::default();
         let id = Uuid::new_v4();
         q.push(id, frame(1)).unwrap();
         let _ = q.drain(id);
@@ -156,7 +203,7 @@ mod tests {
 
     #[test]
     fn capacity_overflow_returns_full() {
-        let q = MessageQueue::new(3);
+        let q = InMemoryMessageQueue::new(3);
         let id = Uuid::new_v4();
         q.push(id, frame(1)).unwrap();
         q.push(id, frame(2)).unwrap();
@@ -169,7 +216,7 @@ mod tests {
 
     #[test]
     fn agents_are_isolated() {
-        let q = MessageQueue::default();
+        let q = InMemoryMessageQueue::default();
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
         q.push(a, frame(1)).unwrap();
@@ -183,7 +230,7 @@ mod tests {
 
     #[test]
     fn len_and_is_empty_track_buffer() {
-        let q = MessageQueue::default();
+        let q = InMemoryMessageQueue::default();
         let id = Uuid::new_v4();
         assert!(q.is_empty(id));
         q.push(id, frame(1)).unwrap();
@@ -193,9 +240,9 @@ mod tests {
 
     #[test]
     fn capacity_returns_configured_value() {
-        assert_eq!(MessageQueue::new(7).capacity(), 7);
+        assert_eq!(InMemoryMessageQueue::new(7).capacity(), 7);
         assert_eq!(
-            MessageQueue::default().capacity(),
+            InMemoryMessageQueue::default().capacity(),
             DEFAULT_PER_AGENT_CAPACITY
         );
     }

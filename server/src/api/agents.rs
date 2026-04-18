@@ -33,14 +33,14 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use futures::stream::{self, Stream};
+use futures::stream::Stream;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use crate::api::error::ApiError;
-use crate::registry::{AgentDescription, QueueError};
+use crate::registry::{AgentDescription, DeliveryOutcome, QueueError};
 use crate::state::AppState;
 
 /// Admin-only routes: list/describe/force-disconnect agents. Per
@@ -107,7 +107,7 @@ pub struct AgentListResponse {
 /// wired up in [`crate::routes`]).
 async fn list_agents(State(state): State<AppState>) -> Result<Json<AgentListResponse>, ApiError> {
     Ok(Json(AgentListResponse {
-        agents: state.registry.list(),
+        agents: state.registry.list_agents().await,
     }))
 }
 
@@ -118,7 +118,8 @@ async fn describe_agent(
 ) -> Result<Json<AgentDescription>, ApiError> {
     state
         .registry
-        .describe(id)
+        .describe_agent(id)
+        .await
         .map(Json)
         .ok_or_else(|| ApiError::NotFound(format!("agent {id}")))
 }
@@ -131,10 +132,10 @@ async fn disconnect_agent(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    if !state.registry.is_connected(id) {
+    if !state.registry.is_connected(id).await {
         return Err(ApiError::NotFound(format!("agent {id}")));
     }
-    state.registry.unregister(id);
+    state.registry.disconnect(id).await;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -165,36 +166,14 @@ async fn send_message(
     })
     .to_string();
 
-    let delivery = if let Some(entry) = state.registry.get(id) {
-        // Live tunnel — deliver inline. If the channel has been
-        // closed between our lookup and the send (a disconnect
-        // race), `SendError` hands us the original frame back, so
-        // we fall through to the queue without rebuilding it. We
-        // deliberately do NOT call `registry.unregister(id)` here:
-        // `run_tunnel`'s own cleanup owns that, and reaching in
-        // from the REST handler risks racing a fresh reconnect
-        // that slotted in at the same `agent_id` between our
-        // failed send and the cleanup call.
-        match entry.tx.send(notif) {
-            Ok(()) => Delivery::Live,
-            Err(send_err) => {
-                let recovered = send_err.0;
-                match state.message_queue.push(id, recovered) {
-                    Ok(()) => Delivery::Queued,
-                    Err(QueueError::Full { capacity, .. }) => {
-                        return Err(queue_full(id, capacity));
-                    }
-                }
-            }
-        }
-    } else {
-        // No live tunnel — buffer for the next reconnect.
-        match state.message_queue.push(id, notif) {
+    let delivery = match state.registry.deliver(id, notif).await {
+        DeliveryOutcome::Live => Delivery::Live,
+        DeliveryOutcome::NoTunnel(frame) => match state.message_queue.push(id, frame).await {
             Ok(()) => Delivery::Queued,
             Err(QueueError::Full { capacity, .. }) => {
                 return Err(queue_full(id, capacity));
             }
-        }
+        },
     };
 
     Ok((StatusCode::ACCEPTED, Json(SendMessageResponse { delivery })))
@@ -215,20 +194,9 @@ async fn stream_events(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let rx = state.stream_broker.subscribe(id);
-    let stream = stream::unfold(rx, |mut rx| async move {
-        loop {
-            match rx.recv().await {
-                Ok(text) => {
-                    return Some((Ok::<Event, Infallible>(Event::default().data(text)), rx));
-                }
-                // Slow consumer — skip the missed frames and keep going.
-                Err(RecvError::Lagged(_)) => continue,
-                Err(RecvError::Closed) => return None,
-            }
-        }
-    });
-    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+    let stream = state.stream_broker.subscribe(id);
+    let sse_stream = stream.map(|text| Ok::<Event, Infallible>(Event::default().data(text)));
+    Ok(Sse::new(sse_stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
 /// `POST /agents/{id}/cancel` — inject a cancel notification down
@@ -238,14 +206,13 @@ async fn cancel_turn(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    if let Some(entry) = state.registry.get(id) {
-        let notif = json!({
-            "jsonrpc": "2.0",
-            "method": "session/cancel",
-            "params": {},
-        });
-        let _ = entry.tx.send(notif.to_string());
-    }
+    let notif = json!({
+        "jsonrpc": "2.0",
+        "method": "session/cancel",
+        "params": {},
+    })
+    .to_string();
+    let _ = state.registry.deliver(id, notif).await;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -255,7 +222,7 @@ mod tests {
 
     use super::*;
     use crate::auth::{Claims, StaticJwtAuthenticator};
-    use crate::registry::{AgentEntry, MessageQueue};
+    use crate::registry::{MessageQueue, TunnelLease};
     use crate::state::AppState;
     use tokio::sync::mpsc;
 
@@ -266,20 +233,21 @@ mod tests {
     fn state_with_queue_capacity(cap: usize) -> AppState {
         let base = fresh_state();
         AppState {
-            message_queue: MessageQueue::new(cap),
+            message_queue: Arc::new(MessageQueue::new(cap)),
             ..base
         }
     }
 
     /// Register a fake agent in the new registry and return the
-    /// receiving side of its tunnel channel.
-    fn register_fake(state: &AppState, agent_id: Uuid) -> mpsc::UnboundedReceiver<String> {
+    /// receiving side of its tunnel channel plus the lease guard.
+    async fn register_fake(
+        state: &AppState,
+        agent_id: Uuid,
+    ) -> (mpsc::UnboundedReceiver<String>, TunnelLease) {
         let (tx, rx) = mpsc::unbounded_channel::<String>();
         let claims = Claims::agent(agent_id, Some(Uuid::new_v4()), 60, "test");
-        state
-            .registry
-            .register(agent_id, AgentEntry::new(tx, claims));
-        rx
+        let lease = state.registry.acquire(agent_id, tx, claims).await.unwrap();
+        (rx, lease)
     }
 
     fn parse(s: &str) -> Value {
@@ -292,7 +260,7 @@ mod tests {
     async fn send_message_delivers_inline_when_connected() {
         let state = fresh_state();
         let agent_id = Uuid::new_v4();
-        let mut rx = register_fake(&state, agent_id);
+        let (mut rx, _lease) = register_fake(&state, agent_id).await;
 
         let (status, Json(resp)) = send_message(
             State(state),
@@ -333,9 +301,9 @@ mod tests {
 
         assert_eq!(status, StatusCode::ACCEPTED);
         assert_eq!(resp.delivery, Delivery::Queued);
-        assert_eq!(state.message_queue.len(agent_id), 1);
+        assert_eq!(state.message_queue.len(agent_id).await, 1);
 
-        let drained = state.message_queue.drain(agent_id);
+        let drained = state.message_queue.drain(agent_id).await;
         assert_eq!(parse(&drained[0])["params"]["content"], "pending");
     }
 
@@ -361,11 +329,12 @@ mod tests {
         state
             .message_queue
             .push(agent_id, "already-buffered".to_string())
+            .await
             .unwrap();
 
         // Register a fake entry and immediately drop its receiver
-        // so `tx.send` fails.
-        let rx = register_fake(&state, agent_id);
+        // so `deliver()` returns `NoTunnel`.
+        let (rx, _lease) = register_fake(&state, agent_id).await;
         drop(rx);
 
         let err = send_message(
@@ -381,7 +350,7 @@ mod tests {
         assert!(matches!(err, ApiError::ServiceUnavailable(_)));
 
         // The queue still holds exactly one frame (the pre-seed).
-        assert_eq!(state.message_queue.len(agent_id), 1);
+        assert_eq!(state.message_queue.len(agent_id).await, 1);
     }
 
     #[tokio::test]
@@ -397,7 +366,7 @@ mod tests {
         // same agent_id.
         let state = fresh_state();
         let agent_id = Uuid::new_v4();
-        let rx = register_fake(&state, agent_id);
+        let (rx, _lease) = register_fake(&state, agent_id).await;
         drop(rx); // close the receiver without unregistering
 
         let (status, Json(resp)) = send_message(
@@ -415,11 +384,11 @@ mod tests {
         assert_eq!(resp.delivery, Delivery::Queued);
 
         // The frame landed in the queue (not silently dropped).
-        assert_eq!(state.message_queue.len(agent_id), 1);
+        assert_eq!(state.message_queue.len(agent_id).await, 1);
 
         // The registry entry is still present — the handler did
         // not reach in and unregister it.
-        assert!(state.registry.is_connected(agent_id));
+        assert!(state.registry.is_connected(agent_id).await);
     }
 
     #[tokio::test]
@@ -470,7 +439,7 @@ mod tests {
 
         // And we still have exactly one frame buffered — no ghost
         // state from the rejected push.
-        assert_eq!(state.message_queue.len(agent_id), 1);
+        assert_eq!(state.message_queue.len(agent_id).await, 1);
     }
 
     // ── GET /agents, GET /agents/{id}, DELETE /agents/{id} ──
@@ -487,9 +456,9 @@ mod tests {
         let state = fresh_state();
         let live = Uuid::new_v4();
         let dead = Uuid::new_v4();
-        let _live_rx = register_fake(&state, live);
-        let _dead_rx = register_fake(&state, dead);
-        state.registry.unregister(dead);
+        let (_live_rx, _live_lease) = register_fake(&state, live).await;
+        let (_dead_rx, _dead_lease) = register_fake(&state, dead).await;
+        drop(_dead_lease); // triggers disconnect via TunnelLease drop
 
         let Json(resp) = list_agents(State(state)).await.unwrap();
         assert_eq!(resp.agents.len(), 2);
@@ -507,7 +476,7 @@ mod tests {
     async fn describe_agent_returns_connected_shape() {
         let state = fresh_state();
         let id = Uuid::new_v4();
-        let _rx = register_fake(&state, id);
+        let (_rx, _lease) = register_fake(&state, id).await;
 
         let Json(desc) = describe_agent(State(state), Path(id)).await.unwrap();
         assert_eq!(desc.agent_id, id);
@@ -528,13 +497,13 @@ mod tests {
     async fn disconnect_unregisters_and_returns_202() {
         let state = fresh_state();
         let id = Uuid::new_v4();
-        let _rx = register_fake(&state, id);
+        let (_rx, _lease) = register_fake(&state, id).await;
 
         let status = disconnect_agent(State(state.clone()), Path(id))
             .await
             .unwrap();
         assert_eq!(status, StatusCode::ACCEPTED);
-        assert!(!state.registry.is_connected(id));
+        assert!(!state.registry.is_connected(id).await);
     }
 
     #[tokio::test]
@@ -552,7 +521,7 @@ mod tests {
     async fn cancel_emits_notification_when_connected() {
         let state = fresh_state();
         let id = Uuid::new_v4();
-        let mut rx = register_fake(&state, id);
+        let (mut rx, _lease) = register_fake(&state, id).await;
 
         let status = cancel_turn(State(state), Path(id)).await.unwrap();
         assert_eq!(status, StatusCode::ACCEPTED);
@@ -585,27 +554,25 @@ mod tests {
 
     #[tokio::test]
     async fn stream_handler_forwards_broadcast_frames() {
-        // Subscribe via the handler and drive a frame through the
-        // underlying broadcast channel. The `Stream::unfold` body
-        // inside `stream_events` pumps the frame out as an SSE
-        // event.
         use axum::response::IntoResponse as _;
         use http_body_util::BodyExt as _;
 
         let state = fresh_state();
         let agent_id = Uuid::new_v4();
 
-        // Warm up the broker channel before the handler subscribes,
-        // so the stream_events call finds a sender already.
-        let sender = state.stream_broker.sender_for(agent_id);
-
-        let sse = stream_events(State(state), Path(agent_id))
+        // Subscribe via the handler first (internally creates the channel).
+        let sse = stream_events(State(state.clone()), Path(agent_id))
             .await
             .expect("sse handle");
 
-        sender
-            .send(r#"{"jsonrpc":"2.0","method":"stream/textDelta","params":{}}"#.to_string())
-            .expect("send to broker");
+        // Publish a frame through the broker.
+        state
+            .stream_broker
+            .publish(
+                agent_id,
+                r#"{"jsonrpc":"2.0","method":"stream/textDelta","params":{}}"#.to_string(),
+            )
+            .await;
 
         let resp = sse.into_response();
         let mut body = resp.into_body();

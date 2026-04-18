@@ -24,10 +24,10 @@ fn live_entry() -> (mpsc::UnboundedReceiver<String>, AgentEntry, Claims) {
     (rx, AgentEntry::new(tx, claims.clone()), claims)
 }
 
-#[test]
-fn registry_default_is_exposed_via_appstate() {
+#[tokio::test]
+async fn registry_default_is_exposed_via_appstate() {
     let state = fresh_state();
-    assert!(state.registry.list().is_empty());
+    assert!(state.registry.list_agents().await.is_empty());
     assert_eq!(state.message_queue.capacity(), 64);
 }
 
@@ -100,37 +100,40 @@ fn message_queue_full_error_is_re_exported_from_crate_root() {
     assert_eq!(capacity, 1);
 }
 
-#[test]
-fn drain_on_reconnect_via_appstate() {
+#[tokio::test]
+async fn drain_on_reconnect_via_appstate() {
     // Smoke: simulate the "agent disconnected, REST pushes, agent
     // reconnects, drain happens" loop using the public surface.
     let state = fresh_state();
     let agent_id = Uuid::new_v4();
 
     // 1. Push two notifications while disconnected.
-    state.message_queue.push(agent_id, "first".into()).unwrap();
-    state.message_queue.push(agent_id, "second".into()).unwrap();
-    assert_eq!(state.message_queue.len(agent_id), 2);
+    state
+        .message_queue
+        .push(agent_id, "first".into())
+        .await
+        .unwrap();
+    state
+        .message_queue
+        .push(agent_id, "second".into())
+        .await
+        .unwrap();
+    assert_eq!(state.message_queue.len(agent_id).await, 2);
 
-    // 2. Reconnect: register an entry, then drain the queue and
-    //    forward to the entry.
-    let (mut rx, entry, claims) = live_entry();
-    // Use the test agent_id, not the live_entry random one.
-    let claims = Claims::agent(agent_id, claims.user, 60, "overacp");
-    let entry = AgentEntry::new(entry.tx.clone(), claims);
-    state.registry.register(agent_id, entry);
+    // 2. Reconnect: register an entry via acquire, then drain the
+    //    queue and deliver to the agent.
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let claims = Claims::agent(agent_id, Some(Uuid::new_v4()), 60, "overacp");
+    let _lease = state.registry.acquire(agent_id, tx, claims).await.unwrap();
 
-    let buffered = state.message_queue.drain(agent_id);
-    let registered = state.registry.get(agent_id).expect("registered");
+    let buffered = state.message_queue.drain(agent_id).await;
     for frame in buffered {
-        registered.tx.send(frame).unwrap();
+        let _ = state.registry.deliver(agent_id, frame).await;
     }
 
     // 3. The reconnecting agent receives both buffered frames in
-    //    order before any live traffic. The channel is already
-    //    populated synchronously by the for-loop above, so
-    //    `try_recv` is sufficient — no need to spin up tokio.
+    //    order before any live traffic.
     assert_eq!(rx.try_recv().ok(), Some("first".to_string()));
     assert_eq!(rx.try_recv().ok(), Some("second".to_string()));
-    assert!(state.message_queue.is_empty(agent_id));
+    assert!(state.message_queue.is_empty(agent_id).await);
 }

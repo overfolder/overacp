@@ -172,16 +172,17 @@ mod tests {
         BootProvider, DefaultBootProvider, DefaultQuotaPolicy, DefaultToolHost, QuotaPolicy,
         ToolHost,
     };
-    use crate::registry::{AgentRegistry, MessageQueue};
-    use crate::tunnel::broker::StreamBroker;
+    use crate::registry::agent::InMemoryAgentRegistry;
+    use crate::registry::queue::InMemoryMessageQueue;
+    use crate::tunnel::broker::InMemoryStreamBroker;
     use crate::tunnel::run::TunnelContext;
 
     fn ctx_default(agent_id: Uuid) -> TunnelContext {
         TunnelContext {
             claims: Claims::agent(agent_id, Some(Uuid::new_v4()), 60, "test"),
-            registry: AgentRegistry::new(),
-            message_queue: MessageQueue::default(),
-            stream_broker: StreamBroker::new(),
+            registry: Arc::new(InMemoryAgentRegistry::new()),
+            message_queue: Arc::new(InMemoryMessageQueue::default()),
+            stream_broker: InMemoryStreamBroker::new(),
             boot_provider: Arc::new(DefaultBootProvider),
             tool_host: Arc::new(DefaultToolHost),
             quota_policy: Arc::new(DefaultQuotaPolicy),
@@ -427,9 +428,9 @@ mod tests {
     ) -> TunnelContext {
         TunnelContext {
             claims: Claims::agent(Uuid::new_v4(), None, 60, "test"),
-            registry: AgentRegistry::new(),
-            message_queue: MessageQueue::default(),
-            stream_broker: StreamBroker::new(),
+            registry: Arc::new(InMemoryAgentRegistry::new()),
+            message_queue: Arc::new(InMemoryMessageQueue::default()),
+            stream_broker: InMemoryStreamBroker::new(),
             boot_provider: boot,
             tool_host: tools,
             quota_policy: quota,

@@ -17,5 +17,8 @@
 pub mod agent;
 pub mod queue;
 
-pub use agent::{AgentDescription, AgentEntry, AgentRegistry};
-pub use queue::{MessageQueue, QueueError};
+pub use agent::{
+    AgentDescription, AgentEntry, AgentRegistryProvider, DeliveryOutcome,
+    InMemoryAgentRegistry as AgentRegistry, RegistryError, TunnelLease,
+};
+pub use queue::{InMemoryMessageQueue as MessageQueue, MessageQueueProvider, QueueError};

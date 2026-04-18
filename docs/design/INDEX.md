@@ -22,3 +22,7 @@ For the high-level architecture and milestone roadmap see
   hydration and persistence: where it lives in the architecture
   (agent supervisor, not the broker), the `WorkspaceSync` trait,
   the per-backend crate convention, and the configuration model.
+- [`ha.md`](./ha.md) — multi-instance HA via Redis/Valkey: ownership
+  leases, inbox streams, pub/sub SSE fan-out, and the `redis` feature
+  gate. Optional backend behind `AgentRegistryProvider`,
+  `MessageQueueProvider`, and `StreamBrokerProvider` traits.

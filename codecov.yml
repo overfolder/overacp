@@ -10,6 +10,11 @@ coverage:
         target: 70%
         if_ci_failed: error
 
+ignore:
+  # Redis backend requires a live Redis/Valkey instance for
+  # integration tests — excluded from patch coverage checks.
+  - "server/src/redis_backend/**"
+
 comment:
   layout: "reach, diff, flags, files"
   require_changes: false
