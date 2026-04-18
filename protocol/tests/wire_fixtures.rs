@@ -3,8 +3,8 @@
 //! values are equal (key order ignored).
 
 use overacp_protocol::messages::{
-    Activity, Heartbeat, InitializeResponse, Message, QuotaCheckResponse, QuotaUpdateRequest,
-    SessionCancelParams, SessionMessageParams, TextDelta, ToolCallNotification,
+    Activity, ContextCompactedParams, Heartbeat, InitializeResponse, Message, QuotaCheckResponse,
+    QuotaUpdateRequest, SessionCancelParams, SessionMessageParams, TextDelta, ToolCallNotification,
     ToolResultNotification, TurnEndParams,
 };
 use serde::de::DeserializeOwned;
@@ -39,6 +39,16 @@ fn quota_update_request_roundtrip() {
 #[test]
 fn turn_end_notification_roundtrip() {
     assert_roundtrip::<TurnEndParams>(include_str!("fixtures/turn_end_notification.json"));
+}
+
+#[test]
+fn turn_end_usage_only_roundtrip() {
+    assert_roundtrip::<TurnEndParams>(include_str!("fixtures/turn_end_usage_only.json"));
+}
+
+#[test]
+fn context_compacted_roundtrip() {
+    assert_roundtrip::<ContextCompactedParams>(include_str!("fixtures/context_compacted.json"));
 }
 
 #[test]

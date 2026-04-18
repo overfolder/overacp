@@ -268,7 +268,8 @@ agent JWT in the `Authorization: Bearer` header on upgrade.
 | `stream/activity`   | extension  | agent → server  | notification | broker fan-out → SSE |
 | `stream/toolCall`   | extension  | agent → server  | notification | broker fan-out → SSE |
 | `stream/toolResult` | extension  | agent → server  | notification | broker fan-out → SSE |
-| `turn/end`          | extension  | agent → server  | notification | broker fan-out → SSE (operator persists) |
+| `turn/end`          | extension  | agent → server  | notification | broker fan-out → SSE (usage only; `messages` deprecated) |
+| `context/compacted` | extension  | agent → server  | notification | broker fan-out → SSE (operator persists compacted history) |
 | `heartbeat`         | extension  | agent → server  | notification | registry liveness ping |
 
 Method-name origin policy: borrow from upstream where possible.
@@ -336,15 +337,34 @@ to the child process on demand.
 
 When the agent finishes a turn it emits `turn/end` as a
 **notification** (no response expected). The broker fans it out
-to SSE subscribers; the operator is responsible for persisting the
-data.
+to SSE subscribers. **The `messages` field is deprecated** — agents
+SHOULD send only `usage`. Operators that need per-turn persistence
+should reconstruct from `stream/*` notifications or wait for
+`context/compacted`.
 
 ```
 Agent → server (notification):
   { "jsonrpc": "2.0", "method": "turn/end",
     "params": {
-      "messages": [ ...turn messages... ],
       "usage": { "input_tokens": 1234, "output_tokens": 567 }
+  }}
+```
+
+### `context/compacted` — post-compaction history sync
+
+Emitted after the agent compacts its working context. Carries a
+prose summary of the dropped messages and the surviving canonical
+messages. The operator SHOULD replace its stored history with
+`messages` and record `summary` as the compaction prefix. See
+[`docs/design/context-management.md`](./docs/design/context-management.md).
+
+```
+Agent → server (notification):
+  { "jsonrpc": "2.0", "method": "context/compacted",
+    "params": {
+      "summary": "...",
+      "messages": [ ...surviving recent messages... ],
+      "usage": { "input_tokens": 1200, "output_tokens": 400 }
   }}
 ```
 

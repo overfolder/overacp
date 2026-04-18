@@ -74,7 +74,9 @@ async fn test_short_no_compaction() {
 
     let result = compact_messages(&llm, &messages, 4).await.unwrap();
     // 3 messages <= keep_recent(4) + 2, so no compaction
-    assert_eq!(result.len(), 3);
+    assert_eq!(result.working_messages.len(), 3);
+    assert_eq!(result.canonical_messages.len(), 3);
+    assert!(result.summary.is_empty());
 }
 
 #[tokio::test]
@@ -89,10 +91,15 @@ async fn test_preserves_system_prompt() {
 
     let result = compact_messages(&llm, &messages, 5).await.unwrap();
 
-    // First message should be the system prompt
-    assert_eq!(result[0].role, Role::System);
+    // First working message should be the system prompt
+    assert_eq!(result.working_messages[0].role, Role::System);
     assert_eq!(
-        result[0].content.as_ref().unwrap().as_text().unwrap(),
+        result.working_messages[0]
+            .content
+            .as_ref()
+            .unwrap()
+            .as_text()
+            .unwrap(),
         "You are helpful."
     );
 }
@@ -108,25 +115,26 @@ async fn test_compact_structure() {
 
     let result = compact_messages(&llm, &messages, 5).await.unwrap();
 
-    // Structure: [system, summary_user, ack_assistant, ...5 recent]
-    assert_eq!(result.len(), 8);
-    assert_eq!(result[0].role, Role::System);
-    assert_eq!(result[1].role, Role::User);
-    assert!(result[1]
+    // Working: [system, <compacted_context> system, ...5 recent] = 7
+    assert_eq!(result.working_messages.len(), 7);
+    assert_eq!(result.working_messages[0].role, Role::System);
+    assert_eq!(result.working_messages[1].role, Role::System);
+    assert!(result.working_messages[1]
         .content
         .as_ref()
         .unwrap()
         .as_text()
         .unwrap()
-        .contains("[Conversation summary]"));
-    assert_eq!(result[2].role, Role::Assistant);
-    assert!(result[2]
-        .content
-        .as_ref()
-        .unwrap()
-        .as_text()
-        .unwrap()
-        .contains("Understood"));
+        .contains("<compacted_context>"));
+
+    // Canonical: only the 5 recent messages, no scaffolding
+    assert_eq!(result.canonical_messages.len(), 5);
+    for msg in &result.canonical_messages {
+        assert_ne!(msg.role, Role::System);
+    }
+
+    // Summary should be populated
+    assert_eq!(result.summary, "Summary of earlier conversation.");
 }
 
 #[tokio::test]
@@ -139,15 +147,42 @@ async fn test_no_system_prompt() {
 
     let result = compact_messages(&llm, &messages, 5).await.unwrap();
 
-    // No system prompt in result
-    assert_ne!(result[0].role, Role::System);
-    // First should be the summary user message
-    assert_eq!(result[0].role, Role::User);
-    assert!(result[0]
+    // Working: [<compacted_context> system, ...5 recent] = 6
+    assert_eq!(result.working_messages.len(), 6);
+    assert_eq!(result.working_messages[0].role, Role::System);
+    assert!(result.working_messages[0]
         .content
         .as_ref()
         .unwrap()
         .as_text()
         .unwrap()
-        .contains("[Conversation summary]"));
+        .contains("<compacted_context>"));
+
+    // Canonical: 5 recent, no system messages
+    assert_eq!(result.canonical_messages.len(), 5);
+    for msg in &result.canonical_messages {
+        assert_ne!(msg.role, Role::System);
+    }
+}
+
+#[tokio::test]
+async fn test_canonical_excludes_compaction_scaffolding() {
+    let llm = MockLlm {
+        summary: "Test summary".to_string(),
+    };
+
+    let mut messages = vec![make_msg(Role::System, "System prompt.")];
+    messages.extend(make_conversation(20));
+
+    let result = compact_messages(&llm, &messages, 5).await.unwrap();
+
+    // No canonical message should contain <compacted_context>
+    for msg in &result.canonical_messages {
+        if let Some(text) = msg.content.as_ref().and_then(|c| c.as_text()) {
+            assert!(
+                !text.contains("<compacted_context>"),
+                "canonical messages must not contain compaction scaffolding"
+            );
+        }
+    }
 }

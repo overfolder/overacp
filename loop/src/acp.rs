@@ -7,8 +7,9 @@
 
 use anyhow::{Context, Result};
 use overacp_protocol::messages::{
-    Activity, Message as ProtoMessage, QuotaUpdateRequest, Role as ProtoRole, SessionMessageParams,
-    TextDelta, ToolCallNotification, ToolResultNotification, TurnEndParams, Usage as ProtoUsage,
+    Activity, ContextCompactedParams, Message as ProtoMessage, QuotaUpdateRequest,
+    Role as ProtoRole, SessionMessageParams, TextDelta, ToolCallNotification,
+    ToolResultNotification, TurnEndParams, Usage as ProtoUsage,
 };
 use overacp_protocol::methods;
 use serde::{Deserialize, Serialize};
@@ -247,25 +248,42 @@ impl<R: Read, W: Write> AcpService for AcpClient<R, W> {
         )
     }
 
-    fn turn_end(&mut self, messages: &[Message], usage: &Usage) -> Result<()> {
-        // Convert LLM-facing messages into the protocol's `Message`
-        // shape via serde round-trip. The two types serialize
-        // identically (same field names, `tool_calls` as Value on the
-        // protocol side absorbs the richer ToolCall typing); using
-        // the typed `TurnEndParams` here makes the broker's wire
-        // contract enforce the payload shape at compile time rather
-        // than at runtime when the broker rejects it.
-        let proto_messages: Vec<ProtoMessage> =
-            serde_json::from_value(serde_json::to_value(messages)?)
-                .context("convert llm::Message to protocol::Message for turn/end")?;
+    fn turn_end(&mut self, _messages: &[Message], usage: &Usage) -> Result<()> {
+        // messages is deprecated — agents send only usage. The
+        // operator reconstructs the turn from stream/* notifications;
+        // the authoritative post-compaction snapshot comes via
+        // context/compacted.
         let params = TurnEndParams {
-            messages: proto_messages,
+            messages: vec![],
             usage: ProtoUsage {
                 input_tokens: usage.prompt_tokens,
                 output_tokens: usage.completion_tokens,
             },
         };
         self.send_notification(methods::TURN_END, Some(serde_json::to_value(params)?))
+    }
+
+    fn context_compacted(
+        &mut self,
+        summary: &str,
+        messages: &[Message],
+        usage: &Usage,
+    ) -> Result<()> {
+        let proto_messages: Vec<ProtoMessage> =
+            serde_json::from_value(serde_json::to_value(messages)?)
+                .context("convert llm::Message to protocol::Message for context/compacted")?;
+        let params = ContextCompactedParams {
+            summary: summary.to_string(),
+            messages: proto_messages,
+            usage: ProtoUsage {
+                input_tokens: usage.prompt_tokens,
+                output_tokens: usage.completion_tokens,
+            },
+        };
+        self.send_notification(
+            methods::CONTEXT_COMPACTED,
+            Some(serde_json::to_value(params)?),
+        )
     }
 
     fn quota_check(&mut self) -> Result<bool> {
@@ -604,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_end_roundtrips_anthropic_image_blocks() {
+    fn turn_end_sends_no_messages() {
         use crate::llm::{ContentBlock, TypedBlock};
         let mut acp = mock_acp("");
         let messages = vec![Message {
@@ -630,11 +648,12 @@ mod tests {
 
         let out = String::from_utf8(acp.writer.clone()).unwrap();
         let parsed: Value = serde_json::from_str(out.trim()).unwrap();
-        let content = &parsed["params"]["messages"][0]["content"];
-        assert_eq!(content.as_array().unwrap().len(), 2);
-        assert_eq!(content[0]["type"], "text");
-        assert_eq!(content[1]["type"], "image");
-        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        // messages is deprecated — should be absent (skip_serializing_if = "Vec::is_empty")
+        assert!(
+            parsed["params"].get("messages").is_none(),
+            "turn/end should not send messages (deprecated)"
+        );
+        assert_eq!(parsed["params"]["usage"]["input_tokens"], 10);
     }
 
     #[test]
@@ -660,43 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_end_roundtrips_multimodal_content_blocks() {
-        use crate::llm::{ContentBlock, TypedBlock};
-        let mut acp = mock_acp("");
-        let messages = vec![Message {
-            role: Role::User,
-            content: Some(Content::Blocks(vec![
-                TypedBlock::Known(ContentBlock::Text {
-                    text: "what's this?".into(),
-                }),
-                TypedBlock::Known(ContentBlock::ImageUrl {
-                    image_url: json!({"url": "data:image/png;base64,abc"}),
-                }),
-            ])),
-            tool_calls: None,
-            tool_call_id: None,
-        }];
-        let usage = Usage {
-            prompt_tokens: 100,
-            completion_tokens: 50,
-            total_tokens: 150,
-            ..Default::default()
-        };
-        acp.turn_end(&messages, &usage).unwrap();
-
-        let out = String::from_utf8(acp.writer.clone()).unwrap();
-        let parsed: Value = serde_json::from_str(out.trim()).unwrap();
-        let content = &parsed["params"]["messages"][0]["content"];
-        assert!(content.is_array());
-        assert_eq!(content.as_array().unwrap().len(), 2);
-        assert_eq!(content[0]["type"], "text");
-        assert_eq!(content[0]["text"], "what's this?");
-        assert_eq!(content[1]["type"], "image_url");
-        assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,abc");
-    }
-
-    #[test]
-    fn turn_end_wraps_messages_and_maps_usage_field_names() {
+    fn turn_end_usage_only() {
         let mut acp = mock_acp("");
         let messages = vec![Message {
             role: Role::Assistant,
@@ -718,7 +701,61 @@ mod tests {
         assert!(parsed.get("id").is_none() || parsed["id"].is_null());
         assert_eq!(parsed["params"]["usage"]["input_tokens"], 100);
         assert_eq!(parsed["params"]["usage"]["output_tokens"], 50);
-        assert_eq!(parsed["params"]["messages"][0]["role"], "assistant");
+        // messages deprecated — absent
+        assert!(parsed["params"].get("messages").is_none());
+    }
+
+    #[test]
+    fn context_compacted_roundtrips_messages() {
+        use crate::llm::{ContentBlock, TypedBlock};
+        let mut acp = mock_acp("");
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: Some(Content::Text("deploy it".into())),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::User,
+                content: Some(Content::Blocks(vec![
+                    TypedBlock::Known(ContentBlock::Text {
+                        text: "with this image".into(),
+                    }),
+                    TypedBlock::Known(ContentBlock::ImageUrl {
+                        image_url: json!({"url": "data:image/png;base64,abc"}),
+                    }),
+                ])),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+        let usage = Usage {
+            prompt_tokens: 200,
+            completion_tokens: 80,
+            total_tokens: 280,
+            ..Default::default()
+        };
+        acp.context_compacted("summary of earlier work", &messages, &usage)
+            .unwrap();
+
+        let out = String::from_utf8(acp.writer.clone()).unwrap();
+        let parsed: Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(parsed["method"], "context/compacted");
+        assert!(parsed.get("id").is_none() || parsed["id"].is_null());
+        assert_eq!(parsed["params"]["summary"], "summary of earlier work");
+        assert_eq!(parsed["params"]["usage"]["input_tokens"], 200);
+        assert_eq!(parsed["params"]["usage"]["output_tokens"], 80);
+
+        let msgs = parsed["params"]["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[0]["content"], "deploy it");
+        // Second message has multimodal blocks
+        let blocks = msgs[1]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[1]["type"], "image_url");
     }
 
     #[test]

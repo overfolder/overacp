@@ -149,6 +149,7 @@ Each method is tagged with its **origin**:
 | `quota/check`       | extension  | agent → server  | request      |
 | `quota/update`      | extension  | agent → server  | request      |
 | `turn/end`          | extension  | agent → server  | notification |
+| `context/compacted` | extension  | agent → server  | notification |
 | `stream/textDelta`  | extension  | agent → server  | notification |
 | `stream/activity`   | extension  | agent → server  | notification |
 | `stream/toolCall`   | extension  | agent → server  | notification |
@@ -206,21 +207,43 @@ hooks. No upstream standard covers them, so the names are ours.
 
 `turn/end` is a **fire-and-forget notification** that an agent
 emits when it finishes a turn. The broker fans it out to SSE
-subscribers; persisting the turn data is the operator's job (the
-operator's SSE consumer reads `turn/end` frames out of
-`/agents/{id}/stream` and writes them to whatever store it owns).
+subscribers. **The `messages` field is deprecated** — agents SHOULD
+send only `usage`. Operators that need per-turn message persistence
+should reconstruct from `stream/*` notifications or wait for
+`context/compacted`.
 
 ```jsonc
-// turn/end notification
+// turn/end notification (messages deprecated, omitted)
 {
   "jsonrpc": "2.0",
   "method": "turn/end",
   "params": {
-    "messages": [
-      { "role": "user", "content": "what's the weather?" },
-      { "role": "assistant", "content": "I'll check." }
-    ],
     "usage": { "input_tokens": 100, "output_tokens": 50 }
+  }
+}
+```
+
+`context/compacted` is a **fire-and-forget notification** emitted
+after the agent compacts its working context. It carries a prose
+`summary` of the dropped messages and the surviving canonical
+`messages`. The operator SHOULD replace its stored history with
+`messages` and record `summary` as the compaction prefix so that a
+future `BootProvider::initialize` can return both. See
+[`context-management.md`](./context-management.md) for the full
+design.
+
+```jsonc
+// context/compacted notification
+{
+  "jsonrpc": "2.0",
+  "method": "context/compacted",
+  "params": {
+    "summary": "User asked to refactor auth...",
+    "messages": [
+      { "role": "user", "content": "now deploy it" },
+      { "role": "assistant", "content": "Deploying..." }
+    ],
+    "usage": { "input_tokens": 1200, "output_tokens": 400 }
   }
 }
 ```

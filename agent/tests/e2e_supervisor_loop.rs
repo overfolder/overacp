@@ -71,10 +71,13 @@ fn ensure_workspace_built() {
 
 // ── Shared pipeline helpers ────────────────────────────────────────
 
-/// Outcome of a full-stack pipeline run: the `turn/end` SSE frame
-/// plus the KillOnDrop guard (kept alive until assertions finish).
+/// Outcome of a full-stack pipeline run: the `turn/end` SSE frame,
+/// all collected SSE frames, and the KillOnDrop guard (kept alive
+/// until assertions finish).
 struct PipelineRun {
     frame: serde_json::Value,
+    /// All SSE frames received before (and including) `turn/end`.
+    all_frames: Vec<serde_json::Value>,
     _supervisor: KillOnDrop,
 }
 
@@ -136,32 +139,52 @@ async fn run_pipeline(
         .unwrap();
     assert!(push_resp.status().is_success());
 
-    // Wait for turn/end.
-    let frame = match timeout(Duration::from_secs(30), find_turn_end(&mut sse_stream)).await {
-        Ok(Ok(Some(v))) => v,
-        Ok(Ok(None)) => panic!("SSE closed without turn/end"),
-        Ok(Err(e)) => panic!("SSE error: {e}"),
-        Err(_) => panic!("timeout waiting for turn/end after 30s"),
-    };
+    // Wait for turn/end, collecting all SSE frames along the way.
+    let (frame, all_frames) =
+        match timeout(Duration::from_secs(30), find_turn_end(&mut sse_stream)).await {
+            Ok(Ok(Some(v))) => v,
+            Ok(Ok(None)) => panic!("SSE closed without turn/end"),
+            Ok(Err(e)) => panic!("SSE error: {e}"),
+            Err(_) => panic!("timeout waiting for turn/end after 30s"),
+        };
 
     assert_eq!(frame["method"], "turn/end");
     PipelineRun {
         frame,
+        all_frames,
         _supervisor: supervisor,
     }
 }
 
-/// Check that `messages` contains a message with the given role
-/// whose content includes `needle`.
-fn assert_message_contains(messages: &[serde_json::Value], role: &str, needle: &str, label: &str) {
-    let found = messages.iter().any(|m| {
-        m["role"] == role
-            && m["content"]
-                .as_str()
-                .map(|s| s.contains(needle))
-                .unwrap_or(false)
+/// Check that streamed SSE frames contain a `stream/textDelta` whose
+/// text includes `needle`, or a `stream/toolResult` whose content
+/// includes `needle`.
+fn assert_streamed_contains(frames: &[serde_json::Value], needle: &str, label: &str) {
+    let found = frames.iter().any(|f| {
+        // Check stream/textDelta
+        if f["method"] == "stream/textDelta" {
+            if let Some(text) = f["params"]["text"].as_str() {
+                if text.contains(needle) {
+                    return true;
+                }
+            }
+        }
+        // Check stream/toolResult
+        if f["method"] == "stream/toolResult" {
+            let content = &f["params"]["content"];
+            if let Some(s) = content.as_str() {
+                if s.contains(needle) {
+                    return true;
+                }
+            }
+            // content may be an object or array — check stringified
+            if content.to_string().contains(needle) {
+                return true;
+            }
+        }
+        false
     });
-    assert!(found, "{label}, got: {messages:?}");
+    assert!(found, "{label}, frames: {frames:?}");
 }
 
 /// Poll `GET /agents/{id}` until the tunnel is connected. Gives up
@@ -192,13 +215,16 @@ async fn wait_for_connected(
     false
 }
 
-/// Drain an SSE byte-stream and return the first parsed JSON frame
-/// whose `method` field is `"turn/end"`.
-async fn find_turn_end<S>(stream: &mut S) -> Result<Option<serde_json::Value>, reqwest::Error>
+/// Drain an SSE byte-stream, collecting all parsed JSON frames, and
+/// return the `turn/end` frame plus all frames seen so far.
+async fn find_turn_end<S>(
+    stream: &mut S,
+) -> Result<Option<(serde_json::Value, Vec<serde_json::Value>)>, reqwest::Error>
 where
     S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
 {
     let mut buf = String::new();
+    let mut all_frames = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk: Bytes = chunk?;
         match str::from_utf8(&chunk) {
@@ -214,8 +240,11 @@ where
             if let Some(json_str) = line.strip_prefix("data: ") {
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
                     if value["method"] == "turn/end" {
-                        return Ok(Some(value));
+                        let turn_end = value.clone();
+                        all_frames.push(value);
+                        return Ok(Some((turn_end, all_frames)));
                     }
+                    all_frames.push(value);
                 }
             }
         }
@@ -243,7 +272,7 @@ async fn full_stack_turn_end_over_real_tunnel() {
     )
     .await;
 
-    let messages = run.frame["params"]["messages"].as_array().unwrap();
+    // turn/end carries usage only (messages deprecated).
     let input_tokens = run.frame["params"]["usage"]["input_tokens"]
         .as_u64()
         .unwrap_or(0);
@@ -252,7 +281,8 @@ async fn full_stack_turn_end_over_real_tunnel() {
         .unwrap_or(0);
     assert!(input_tokens > 0, "input_tokens not reported");
     assert!(output_tokens > 0, "output_tokens not reported");
-    assert_message_contains(messages, "assistant", "HELLO", "expected HELLO");
+    // Verify the agent's response arrived via stream/textDelta.
+    assert_streamed_contains(&run.all_frames, "HELLO", "expected HELLO in stream");
 }
 
 // ── Operator-provided tool e2e ──────────────────────────────────────
@@ -314,13 +344,16 @@ async fn full_stack_operator_tool_round_trip() {
     )
     .await;
 
-    let messages = run.frame["params"]["messages"].as_array().unwrap();
-    assert_message_contains(messages, "tool", "sunny", "expected weather tool result");
-    assert_message_contains(
-        messages,
-        "assistant",
+    // Verify tool result and final text arrived via stream/*.
+    assert_streamed_contains(
+        &run.all_frames,
+        "sunny",
+        "expected weather tool result in stream",
+    );
+    assert_streamed_contains(
+        &run.all_frames,
         "WEATHER_RESULT",
-        "expected final text",
+        "expected final text in stream",
     );
 }
 
@@ -350,7 +383,15 @@ async fn full_stack_builtin_tool_round_trip() {
     )
     .await;
 
-    let messages = run.frame["params"]["messages"].as_array().unwrap();
-    assert_message_contains(messages, "tool", "CANARY_VALUE", "expected marker content");
-    assert_message_contains(messages, "assistant", "BUILTIN_OK", "expected final text");
+    // Verify tool result and final text arrived via stream/*.
+    assert_streamed_contains(
+        &run.all_frames,
+        "CANARY_VALUE",
+        "expected marker content in stream",
+    );
+    assert_streamed_contains(
+        &run.all_frames,
+        "BUILTIN_OK",
+        "expected final text in stream",
+    );
 }

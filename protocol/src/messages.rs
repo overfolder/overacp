@@ -142,12 +142,35 @@ pub struct QuotaUpdateResponse {}
 // ── turn/end (agent → server, fire-and-forget notification) ─────────
 
 /// Params of the `turn/end` notification emitted by the agent when
-/// a turn completes. The broker fans this out to SSE subscribers;
-/// the operator's backend is responsible for persisting the data.
-/// There is no response — this is a notification, not a request.
+/// a turn completes. The broker fans this out to SSE subscribers.
+///
+/// **`messages` is deprecated.** Agents SHOULD omit this field (it
+/// will serialize as absent when the vec is empty). Operators that
+/// need per-turn persistence should reconstruct the turn from
+/// `stream/*` notifications, or wait for `context/compacted` which
+/// carries the authoritative post-compaction history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TurnEndParams {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<Message>,
+    #[serde(default)]
+    pub usage: Usage,
+}
+
+/// Params of the `context/compacted` notification. Emitted by the
+/// agent after it compacts its working context. Carries a prose
+/// summary of the messages that were dropped and the surviving
+/// recent messages (canonical — no agent-internal scaffolding).
+///
+/// The operator SHOULD replace its stored history for this
+/// conversation with `messages` and record `summary` as the
+/// compaction prefix so that a future `BootProvider::initialize`
+/// can return both.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextCompactedParams {
+    /// LLM-generated summary of the messages that were dropped.
+    pub summary: String,
+    /// The messages that survived compaction (most recent window).
     pub messages: Vec<Message>,
     #[serde(default)]
     pub usage: Usage,

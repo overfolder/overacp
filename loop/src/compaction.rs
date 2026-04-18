@@ -12,17 +12,38 @@ Preserve all important context: decisions made, files modified, \
 key findings, current task state, and any commitments or next steps. \
 Be concise but complete — this summary replaces the original messages.";
 
+/// Result of a compaction operation, separating what the LLM sees
+/// from what the operator should persist.
+pub struct CompactionResult {
+    /// Messages for the LLM's working context. Includes a
+    /// `<compacted_context>` system message summarizing dropped
+    /// history — this is agent-internal scaffolding.
+    pub working_messages: Vec<Message>,
+    /// Clean recent messages for the operator (no scaffolding).
+    /// The operator should persist these as the new canonical
+    /// conversation history.
+    pub canonical_messages: Vec<Message>,
+    /// Prose summary of the messages that were dropped.
+    pub summary: String,
+}
+
 /// Compact older messages into a summary when context is too large.
 ///
 /// Keeps the system prompt and the last `keep_recent` messages intact.
-/// Summarizes everything in between using an LLM call.
+/// Summarizes everything in between using an LLM call, then returns
+/// a [`CompactionResult`] with both the LLM-facing working context
+/// and the clean canonical messages for operator persistence.
 pub async fn compact_messages(
     llm: &(impl LlmService + ?Sized),
     messages: &[Message],
     keep_recent: usize,
-) -> Result<Vec<Message>> {
+) -> Result<CompactionResult> {
     if messages.len() <= keep_recent + 2 {
-        return Ok(messages.to_vec());
+        return Ok(CompactionResult {
+            working_messages: messages.to_vec(),
+            canonical_messages: messages.to_vec(),
+            summary: String::new(),
+        });
     }
 
     let system_msg = messages.first().filter(|m| m.role == Role::System).cloned();
@@ -32,11 +53,19 @@ pub async fn compact_messages(
     let split_point = find_safe_split(messages, start, proposed);
 
     if split_point <= start {
-        return Ok(messages.to_vec());
+        return Ok(CompactionResult {
+            working_messages: messages.to_vec(),
+            canonical_messages: messages.to_vec(),
+            summary: String::new(),
+        });
     }
 
     let to_compact = &messages[start..split_point];
     let recent = &messages[split_point..];
+
+    // TODO: before summarizing, check for an operator-provided
+    // `memory_flush` tool and invoke it with the to-compact slice
+    // so the operator can extract long-term facts. See plan §5.
 
     let summary = summarize(llm, to_compact).await?;
     info!(
@@ -45,32 +74,31 @@ pub async fn compact_messages(
         summary.len()
     );
 
-    let mut result = Vec::new();
+    // Working context: system prompt + compaction summary + recent.
+    let mut working = Vec::new();
     if let Some(sys) = system_msg {
-        result.push(sys);
+        working.push(sys);
     }
-    result.push(Message {
-        role: Role::User,
+    working.push(Message {
+        role: Role::System,
         content: Some(Content::Text(format!(
-            "[Conversation summary]\n{}",
+            "<compacted_context>\n{}\n</compacted_context>",
             summary
         ))),
         tool_calls: None,
         tool_call_id: None,
     });
-    result.push(Message {
-        role: Role::Assistant,
-        content: Some(Content::Text(
-            "Understood. I have the conversation context from the summary. \
-             Continuing from where we left off."
-                .to_string(),
-        )),
-        tool_calls: None,
-        tool_call_id: None,
-    });
-    result.extend_from_slice(recent);
+    working.extend_from_slice(recent);
 
-    Ok(result)
+    // Canonical messages: only the real recent messages, no
+    // scaffolding. This is what the operator should persist.
+    let canonical = recent.to_vec();
+
+    Ok(CompactionResult {
+        working_messages: working,
+        canonical_messages: canonical,
+        summary,
+    })
 }
 
 /// Walk the proposed split backward until no tool_call in
