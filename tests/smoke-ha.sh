@@ -30,12 +30,19 @@ LOG_BETA=/tmp/overacp-ha-beta.log
 
 # ── plumbing ─────────────────────────────────────────────────────
 
-need() { command -v "$1" >/dev/null || { echo "missing dep: $1"; exit 1; }; }
+skip() { echo "SKIP: $1"; exit 0; }
+need() { command -v "$1" >/dev/null || skip "missing dep: $1"; }
 for dep in docker curl jq uuidgen openssl python3 websocat; do need "$dep"; done
-python3 -c 'import jwt' 2>/dev/null || {
-  echo "missing dep: python3 -m pip install PyJWT"
-  exit 1
-}
+python3 -c 'import jwt' 2>/dev/null || skip "missing dep: python3 PyJWT"
+
+# The binary must be built with --features redis. When compiled
+# without the feature, OVERACP_REDIS_URL is silently ignored and
+# the server runs in-memory mode — which defeats the entire test.
+# We detect this by checking if the binary contains the redis
+# enablement log message.
+if ! grep -q "enabling redis backend" "$TARGET_DIR/overacp-server" 2>/dev/null; then
+  skip "binary not built with --features redis (run: cargo build -p overacp-server --features redis)"
+fi
 
 hr() { printf '\n── %s ' "$1"; printf '%.0s─' $(seq 1 $((60 - ${#1}))); echo; }
 fail() { echo "FAIL: $1"; exit 1; }
