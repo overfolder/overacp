@@ -20,7 +20,7 @@ use overacp_server::hooks::{
 };
 use overacp_server::tunnel::dispatch::handle_message;
 use overacp_server::tunnel::run::TunnelContext;
-use overacp_server::tunnel::StreamBroker;
+use overacp_server::tunnel::InMemoryStreamBroker;
 use overacp_server::{AppState, StaticJwtAuthenticator};
 use uuid::Uuid;
 
@@ -196,7 +196,7 @@ async fn turn_end_is_fanned_out_to_stream_broker_subscribers() {
     // forwards them to the per-agent broadcast channel. This test
     // exercises the broker fan-out directly: if you subscribe to an
     // agent before pushing a frame, you receive it.
-    let stream_broker = StreamBroker::new();
+    let stream_broker = InMemoryStreamBroker::new();
     let agent_id = Uuid::new_v4();
 
     let mut rx = stream_broker.subscribe(agent_id);

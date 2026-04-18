@@ -1,3 +1,4 @@
+use std::env;
 use std::error::Error as StdError;
 
 use overacp_server::build_state_from_env;
@@ -15,11 +16,14 @@ async fn main() -> Result<(), Box<dyn StdError>> {
         )
         .init();
 
-    let state = build_state_from_env()?;
+    let state = build_state_from_env().await?;
     let app = overacp_server::router(state);
 
-    let listener = TcpListener::bind("0.0.0.0:8080").await?;
-    tracing::info!("overacp-server listening on 0.0.0.0:8080");
+    let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    let addr = format!("0.0.0.0:{port}");
+
+    let listener = TcpListener::bind(&addr).await?;
+    tracing::info!("overacp-server listening on {addr}");
     axum::serve(listener, app).await?;
     Ok(())
 }

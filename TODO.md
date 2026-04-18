@@ -153,9 +153,12 @@ broker itself.
 - [ ] Agent JWT rotation strategy. Currently mints once with a
       30-day TTL per `docs/design/protocol.md` § 2.4 and never
       refreshes.
-- [ ] Persistent `MessageQueue` for multi-replica deployments
-      (Redis stream, NATS jetstream). Current in-memory queue
-      survives reconnects but not broker restarts.
+- [x] Persistent `MessageQueue` for multi-replica deployments.
+      Landed as the `redis` feature: `RedisMessageQueue` (inbox
+      streams + buffer streams), `RedisAgentRegistry` (ownership
+      leases + XREADGROUP consumer), `RedisStreamBroker` (pub/sub
+      SSE fan-out). See [`docs/design/ha.md`](./docs/design/ha.md)
+      and `tests/smoke-ha.sh`.
 - [ ] Streaming completions (multiple `stream/textDelta` per turn,
       proper turn terminator framing).
 

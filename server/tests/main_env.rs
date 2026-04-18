@@ -65,6 +65,7 @@ async fn healthz_status(state: overacp_server::AppState) -> StatusCode {
 async fn missing_signing_key_errors() {
     let _g = EnvGuard::new();
     let err = build_state_from_env()
+        .await
         .err()
         .expect("should fail without signing key");
     assert!(matches!(err, StartupError::MissingSigningKey));
@@ -75,7 +76,7 @@ async fn missing_signing_key_errors() {
 async fn signing_key_only_uses_default_issuer() {
     let g = EnvGuard::new();
     g.set("OVERACP_JWT_SIGNING_KEY", "k");
-    let state = build_state_from_env().expect("should build");
+    let state = build_state_from_env().await.expect("should build");
     assert_eq!(state.authenticator.issuer(), "overacp");
     // And the state produces a live router with a responsive healthz.
     assert_eq!(healthz_status(state).await, StatusCode::OK);
@@ -86,6 +87,6 @@ async fn custom_issuer_is_honoured() {
     let g = EnvGuard::new();
     g.set("OVERACP_JWT_SIGNING_KEY", "k");
     g.set("OVERACP_JWT_ISSUER", "custom-issuer");
-    let state = build_state_from_env().expect("should build");
+    let state = build_state_from_env().await.expect("should build");
     assert_eq!(state.authenticator.issuer(), "custom-issuer");
 }

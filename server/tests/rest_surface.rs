@@ -25,8 +25,8 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
 use overacp_server::auth::{Authenticator, Claims};
-use overacp_server::registry::{AgentEntry, MessageQueue};
-use overacp_server::{router, AppState, StaticJwtAuthenticator};
+use overacp_server::registry::MessageQueue;
+use overacp_server::{router, AppState, StaticJwtAuthenticator, TunnelLease};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tower::ServiceExt;
@@ -44,7 +44,7 @@ fn fresh_state() -> (AppState, Arc<dyn Authenticator>) {
 fn state_with_queue_capacity(cap: usize) -> (AppState, Arc<dyn Authenticator>) {
     let (state, auth) = fresh_state();
     let state = AppState {
-        message_queue: MessageQueue::new(cap),
+        message_queue: Arc::new(MessageQueue::new(cap)),
         ..state
     };
     (state, auth)
@@ -61,14 +61,15 @@ fn mint_agent_for(auth: &Arc<dyn Authenticator>, agent_id: Uuid) -> String {
 }
 
 /// Register a fake tunnel entry in the registry and return its
-/// receiving channel. Mirrors the `run_tunnel` registration path.
-fn register_fake(state: &AppState, agent_id: Uuid) -> mpsc::UnboundedReceiver<String> {
+/// receiving channel plus the lease guard.
+async fn register_fake(
+    state: &AppState,
+    agent_id: Uuid,
+) -> (mpsc::UnboundedReceiver<String>, TunnelLease) {
     let (tx, rx) = mpsc::unbounded_channel::<String>();
     let claims = Claims::agent(agent_id, None, 300, ISSUER);
-    state
-        .registry
-        .register(agent_id, AgentEntry::new(tx, claims));
-    rx
+    let lease = state.registry.acquire(agent_id, tx, claims).await.unwrap();
+    (rx, lease)
 }
 
 async fn oneshot(app: axum::Router, req: Request<Body>) -> (StatusCode, Value) {
@@ -218,7 +219,7 @@ async fn describe_agent_is_admin_only_per_spec() {
     // hit the agent-scoped streaming endpoints instead.
     let (state, auth) = fresh_state();
     let agent_id = Uuid::new_v4();
-    let _rx = register_fake(&state, agent_id);
+    let (_rx, _lease) = register_fake(&state, agent_id).await;
     let app = router(state);
 
     // Admin can describe any agent.
@@ -271,7 +272,7 @@ async fn describe_unknown_agent_returns_404_for_admin() {
 async fn delete_agent_admin_only_and_disconnects() {
     let (state, auth) = fresh_state();
     let agent_id = Uuid::new_v4();
-    let _rx = register_fake(&state, agent_id);
+    let (_rx, _lease) = register_fake(&state, agent_id).await;
 
     let admin_jwt = mint_admin(&auth);
     let app = router(state.clone());
@@ -282,7 +283,7 @@ async fn delete_agent_admin_only_and_disconnects() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED);
-    assert!(!state.registry.is_connected(agent_id));
+    assert!(!state.registry.is_connected(agent_id).await);
 }
 
 #[tokio::test]
@@ -292,7 +293,7 @@ async fn delete_agent_rejects_agent_tokens() {
     // per SPEC.md § "Route authorization".
     let (state, auth) = fresh_state();
     let agent_id = Uuid::new_v4();
-    let _rx = register_fake(&state, agent_id);
+    let (_rx, _lease) = register_fake(&state, agent_id).await;
     let app = router(state.clone());
 
     // Own token → 403.
@@ -315,7 +316,7 @@ async fn delete_agent_rejects_agent_tokens() {
 
     // And the registry entry is still alive — neither attempt
     // took effect.
-    assert!(state.registry.is_connected(agent_id));
+    assert!(state.registry.is_connected(agent_id).await);
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -326,7 +327,7 @@ async fn delete_agent_rejects_agent_tokens() {
 async fn send_message_live_delivery_via_admin_token() {
     let (state, auth) = fresh_state();
     let agent_id = Uuid::new_v4();
-    let mut rx = register_fake(&state, agent_id);
+    let (mut rx, _lease) = register_fake(&state, agent_id).await;
     let admin_jwt = mint_admin(&auth);
     let app = router(state);
 
@@ -365,7 +366,7 @@ async fn send_message_queues_when_agent_disconnected() {
     let (status, body) = oneshot(app, req).await;
     assert_eq!(status, StatusCode::ACCEPTED);
     assert_eq!(body["delivery"], "queued");
-    assert_eq!(state.message_queue.len(agent_id), 1);
+    assert_eq!(state.message_queue.len(agent_id).await, 1);
 }
 
 #[tokio::test]
@@ -409,7 +410,7 @@ async fn send_message_returns_503_on_queue_overflow() {
 async fn send_message_agent_token_scoped_to_own_id() {
     let (state, auth) = fresh_state();
     let agent_id = Uuid::new_v4();
-    let _rx = register_fake(&state, agent_id);
+    let (_rx, _lease) = register_fake(&state, agent_id).await;
     let app = router(state);
 
     // Own token works.
@@ -467,7 +468,7 @@ async fn cancel_when_disconnected_returns_202() {
 async fn cancel_agent_token_scoped_to_own_id() {
     let (state, auth) = fresh_state();
     let agent_id = Uuid::new_v4();
-    let _rx = register_fake(&state, agent_id);
+    let (_rx, _lease) = register_fake(&state, agent_id).await;
     let app = router(state);
 
     // Own token → 202.
@@ -499,7 +500,7 @@ async fn cancel_agent_token_scoped_to_own_id() {
 async fn cancel_when_connected_sends_session_cancel() {
     let (state, auth) = fresh_state();
     let agent_id = Uuid::new_v4();
-    let mut rx = register_fake(&state, agent_id);
+    let (mut rx, _lease) = register_fake(&state, agent_id).await;
     let admin_jwt = mint_admin(&auth);
     let app = router(state);
     let (status, _) = oneshot(

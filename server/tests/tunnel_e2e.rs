@@ -256,7 +256,7 @@ async fn reconnect_drains_buffered_session_messages() {
             assert_eq!(parsed["delivery"], "queued");
         }
     }
-    assert_eq!(state.message_queue.len(agent_id), 2);
+    assert_eq!(state.message_queue.len(agent_id).await, 2);
 
     // Now start the server and open the tunnel. The write loop
     // drains the queue before serving live traffic.
@@ -272,7 +272,7 @@ async fn reconnect_drains_buffered_session_messages() {
     assert!(second.contains(r#""content":"second""#));
 
     // And the queue is empty now.
-    assert_eq!(state.message_queue.len(agent_id), 0);
+    assert_eq!(state.message_queue.len(agent_id).await, 0);
 
     ws.close(None).await.ok();
 }
@@ -301,7 +301,7 @@ async fn turn_end_fans_out_to_sse_subscribers() {
     .await
     .unwrap();
 
-    let fanned = timeout(Duration::from_secs(2), rx.recv())
+    let fanned = timeout(Duration::from_secs(2), rx.next())
         .await
         .expect("broker fan-out timeout")
         .expect("broker fan-out closed");
@@ -410,7 +410,7 @@ async fn multimodal_turn_end_fans_out_to_sse_with_blocks_intact() {
         .await
         .unwrap();
 
-    let fanned = timeout(Duration::from_secs(2), rx.recv())
+    let fanned = timeout(Duration::from_secs(2), rx.next())
         .await
         .expect("fan-out timeout")
         .expect("fan-out closed");

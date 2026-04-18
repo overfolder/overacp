@@ -1,4 +1,4 @@
-//! `AgentRegistry` — in-memory routing table of currently-connected
+//! `InMemoryAgentRegistry` — in-memory routing table of currently-connected
 //! agents.
 //!
 //! The registry stores one [`AgentEntry`] per active tunnel, keyed by
@@ -16,11 +16,99 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use async_trait::async_trait;
+use thiserror::Error;
+
 use crate::auth::Claims;
 
 /// How many recently-disconnected agents to remember. Bounded so a
 /// flapping client can't grow the registry without limit.
 const RECENT_CAPACITY: usize = 64;
+
+/// Outcome of a `deliver` call on the registry.
+pub enum DeliveryOutcome {
+    /// Frame was delivered to the agent's tunnel (locally or via stream).
+    Live,
+    /// No active tunnel for this agent. The original frame is returned
+    /// so the caller can buffer it in the `MessageQueue`.
+    NoTunnel(String),
+}
+
+/// Errors from tunnel lease acquisition.
+#[derive(Debug, Error)]
+pub enum RegistryError {
+    #[error("failed to acquire tunnel for agent {agent_id}: {reason}")]
+    AcquireFailed { agent_id: Uuid, reason: String },
+}
+
+/// RAII guard for a tunnel lease. Dropping the guard releases the
+/// lease (unregisters the agent in the in-memory case, releases the
+/// Redis ownership lock in the distributed case).
+pub struct TunnelLease {
+    cleanup: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl TunnelLease {
+    pub fn new(cleanup: impl FnOnce() + Send + 'static) -> Self {
+        Self {
+            cleanup: Some(Box::new(cleanup)),
+        }
+    }
+}
+
+impl Drop for TunnelLease {
+    fn drop(&mut self) {
+        if let Some(f) = self.cleanup.take() {
+            f();
+        }
+    }
+}
+
+/// Trait for agent registry implementations. The in-memory default
+/// stores entries in a `DashMap`; the Redis backend (behind the
+/// `redis` feature) uses ownership leases and inbox streams.
+#[async_trait]
+pub trait AgentRegistryProvider: Send + Sync {
+    /// Register a freshly-connected agent and acquire a tunnel lease.
+    /// The returned `TunnelLease` is an RAII guard: dropping it
+    /// releases the lease and unregisters the agent.
+    async fn acquire(
+        &self,
+        agent_id: Uuid,
+        local_tx: mpsc::UnboundedSender<String>,
+        claims: Claims,
+    ) -> Result<TunnelLease, RegistryError>;
+
+    /// Deliver a frame to the agent's tunnel. Returns `Live` if the
+    /// frame was accepted for delivery (locally or via a stream),
+    /// `NoTunnel(frame)` if no tunnel exists (caller should buffer).
+    async fn deliver(&self, agent_id: Uuid, frame: String) -> DeliveryOutcome;
+
+    /// Whether `agent_id` currently has a live tunnel anywhere in
+    /// the cluster.
+    async fn is_connected(&self, agent_id: Uuid) -> bool;
+
+    /// Snapshot of all connected + recently-disconnected agents.
+    async fn list_agents(&self) -> Vec<AgentDescription>;
+
+    /// Describe a single agent by ID.
+    async fn describe_agent(&self, agent_id: Uuid) -> Option<AgentDescription>;
+
+    /// Force-disconnect the tunnel for `agent_id`.
+    async fn disconnect(&self, agent_id: Uuid);
+
+    /// Record activity from the agent (bumps last-activity timestamp).
+    async fn touch(&self, agent_id: Uuid);
+
+    /// Subscribe to control signals (e.g. `takeover`, `disconnect`)
+    /// for this agent. Returns `None` for backends that do not support
+    /// cross-instance control (the in-memory default). When `Some`,
+    /// the receiver yields signal strings; the tunnel read loop should
+    /// break when one arrives.
+    fn control_receiver(&self, _agent_id: Uuid) -> Option<mpsc::UnboundedReceiver<String>> {
+        None
+    }
+}
 
 /// Routing entry for one connected agent.
 pub struct AgentEntry {
@@ -120,18 +208,18 @@ struct RecentEntry {
 /// Per-agent routing table. Cheap to clone — internally an `Arc`-
 /// equipped DashMap and a Mutex-guarded VecDeque.
 #[derive(Clone)]
-pub struct AgentRegistry {
+pub struct InMemoryAgentRegistry {
     connected: Arc<DashMap<Uuid, Arc<AgentEntry>>>,
     recent: Arc<Mutex<VecDeque<RecentEntry>>>,
 }
 
-impl Default for AgentRegistry {
+impl Default for InMemoryAgentRegistry {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl AgentRegistry {
+impl InMemoryAgentRegistry {
     pub fn new() -> Self {
         Self {
             connected: Arc::new(DashMap::new()),
@@ -232,6 +320,55 @@ impl AgentRegistry {
     }
 }
 
+#[async_trait]
+impl AgentRegistryProvider for InMemoryAgentRegistry {
+    async fn acquire(
+        &self,
+        agent_id: Uuid,
+        local_tx: mpsc::UnboundedSender<String>,
+        claims: Claims,
+    ) -> Result<TunnelLease, RegistryError> {
+        self.register(agent_id, AgentEntry::new(local_tx, claims));
+        let registry = self.clone();
+        Ok(TunnelLease::new(move || {
+            registry.unregister(agent_id);
+        }))
+    }
+
+    async fn deliver(&self, agent_id: Uuid, frame: String) -> DeliveryOutcome {
+        if let Some(entry) = self.get(agent_id) {
+            match entry.tx.send(frame) {
+                Ok(()) => DeliveryOutcome::Live,
+                Err(err) => DeliveryOutcome::NoTunnel(err.0),
+            }
+        } else {
+            DeliveryOutcome::NoTunnel(frame)
+        }
+    }
+
+    async fn is_connected(&self, agent_id: Uuid) -> bool {
+        self.connected.contains_key(&agent_id)
+    }
+
+    async fn list_agents(&self) -> Vec<AgentDescription> {
+        self.list()
+    }
+
+    async fn describe_agent(&self, agent_id: Uuid) -> Option<AgentDescription> {
+        self.describe(agent_id)
+    }
+
+    async fn disconnect(&self, agent_id: Uuid) {
+        self.unregister(agent_id);
+    }
+
+    async fn touch(&self, agent_id: Uuid) {
+        if let Some(entry) = self.get(agent_id) {
+            entry.touch();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,7 +381,7 @@ mod tests {
 
     #[test]
     fn register_and_get() {
-        let reg = AgentRegistry::new();
+        let reg = InMemoryAgentRegistry::new();
         let id = Uuid::new_v4();
         let (_rx, entry) = entry_for(id);
         reg.register(id, entry);
@@ -254,16 +391,16 @@ mod tests {
 
     #[test]
     fn default_matches_new() {
-        // `AgentRegistry::default()` should produce an empty
+        // `InMemoryAgentRegistry::default()` should produce an empty
         // registry equivalent to `::new()`.
-        let reg: AgentRegistry = Default::default();
+        let reg: InMemoryAgentRegistry = Default::default();
         assert!(reg.list().is_empty());
         assert!(!reg.is_connected(Uuid::new_v4()));
     }
 
     #[test]
     fn unregister_moves_to_recent_log() {
-        let reg = AgentRegistry::new();
+        let reg = InMemoryAgentRegistry::new();
         let id = Uuid::new_v4();
         let (_rx, entry) = entry_for(id);
         reg.register(id, entry);
@@ -277,7 +414,7 @@ mod tests {
 
     #[test]
     fn describe_finds_recent_entry_after_disconnect() {
-        let reg = AgentRegistry::new();
+        let reg = InMemoryAgentRegistry::new();
         let id = Uuid::new_v4();
         let (_rx, entry) = entry_for(id);
         reg.register(id, entry);
@@ -289,7 +426,7 @@ mod tests {
 
     #[test]
     fn reconnect_clears_recent_entry() {
-        let reg = AgentRegistry::new();
+        let reg = InMemoryAgentRegistry::new();
         let id = Uuid::new_v4();
         let (_rx, e1) = entry_for(id);
         reg.register(id, e1);
@@ -317,13 +454,13 @@ mod tests {
 
     #[test]
     fn describe_unknown_agent_is_none() {
-        let reg = AgentRegistry::new();
+        let reg = InMemoryAgentRegistry::new();
         assert!(reg.describe(Uuid::new_v4()).is_none());
     }
 
     #[test]
     fn recent_log_is_bounded() {
-        let reg = AgentRegistry::new();
+        let reg = InMemoryAgentRegistry::new();
         // Push more than RECENT_CAPACITY agents through the
         // disconnect path; the log should never exceed the cap.
         for _ in 0..(RECENT_CAPACITY + 32) {
@@ -338,7 +475,7 @@ mod tests {
 
     #[test]
     fn list_orders_connected_first() {
-        let reg = AgentRegistry::new();
+        let reg = InMemoryAgentRegistry::new();
         // disconnected agent
         let dead_id = Uuid::new_v4();
         let (_rx, dead) = entry_for(dead_id);
@@ -368,7 +505,7 @@ mod tests {
         // the race, but we pin the end state after an unregister
         // + register cycle: the agent appears in the list exactly
         // once and is marked connected.
-        let reg = AgentRegistry::new();
+        let reg = InMemoryAgentRegistry::new();
         let id = Uuid::new_v4();
 
         let (_rx1, e1) = entry_for(id);

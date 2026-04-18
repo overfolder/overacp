@@ -4,19 +4,23 @@ use crate::auth::Authenticator;
 use crate::hooks::{
     BootProvider, DefaultBootProvider, DefaultQuotaPolicy, DefaultToolHost, QuotaPolicy, ToolHost,
 };
-use crate::registry::{AgentRegistry, MessageQueue};
-use crate::tunnel::broker::StreamBroker;
+use crate::registry::agent::{AgentRegistryProvider, InMemoryAgentRegistry};
+use crate::registry::queue::{InMemoryMessageQueue, MessageQueueProvider};
+use crate::tunnel::broker::{InMemoryStreamBroker, StreamBrokerProvider};
+
+#[cfg(feature = "redis")]
+use crate::redis_backend;
 
 #[derive(Clone)]
 pub struct AppState {
     pub authenticator: Arc<dyn Authenticator>,
     /// Per-agent routing table. The source of truth for every REST
     /// handler in `api/agents.rs` and the tunnel write path.
-    pub registry: AgentRegistry,
+    pub registry: Arc<dyn AgentRegistryProvider>,
     /// Bounded per-agent buffer for `session/message` pushes that
     /// arrive while the agent's tunnel is disconnected.
-    pub message_queue: MessageQueue,
-    pub stream_broker: Arc<StreamBroker>,
+    pub message_queue: Arc<dyn MessageQueueProvider>,
+    pub stream_broker: Arc<dyn StreamBrokerProvider>,
     /// Operator hook for `initialize` — see `hooks::BootProvider`.
     pub boot_provider: Arc<dyn BootProvider>,
     /// Operator hook for `tools/list` and `tools/call`.
@@ -29,9 +33,9 @@ impl AppState {
     pub fn new(authenticator: Arc<dyn Authenticator>) -> Self {
         Self {
             authenticator,
-            registry: AgentRegistry::new(),
-            message_queue: MessageQueue::default(),
-            stream_broker: StreamBroker::new(),
+            registry: Arc::new(InMemoryAgentRegistry::new()),
+            message_queue: Arc::new(InMemoryMessageQueue::default()),
+            stream_broker: InMemoryStreamBroker::new(),
             boot_provider: Arc::new(DefaultBootProvider),
             tool_host: Arc::new(DefaultToolHost),
             quota_policy: Arc::new(DefaultQuotaPolicy),
@@ -56,6 +60,16 @@ impl AppState {
     /// operator-supplied implementation.
     pub fn with_quota_policy(mut self, policy: Arc<dyn QuotaPolicy>) -> Self {
         self.quota_policy = policy;
+        self
+    }
+
+    /// Builder: swap all three routing providers to Redis-backed
+    /// implementations for multi-instance HA.
+    #[cfg(feature = "redis")]
+    pub fn with_redis_providers(mut self, providers: redis_backend::RedisProviders) -> Self {
+        self.registry = providers.registry;
+        self.message_queue = providers.message_queue;
+        self.stream_broker = providers.stream_broker;
         self
     }
 }

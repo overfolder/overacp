@@ -26,8 +26,15 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 futures = "0.3"
 futures-util = { workspace = true }
 dashmap = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
 jsonwebtoken = { workspace = true }
 dotenvy = { workspace = true }
+
+# Optional Redis/Valkey backend for multi-instance HA.
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "streams"], optional = true }
+
+[features]
+redis = ["dep:redis"]
 
 [lints]
 workspace = true

@@ -482,16 +482,20 @@ frontmatter and drop the SPEC link in the same change.
 
 ## Open questions
 
-- **Reconnect & redelivery semantics.** The current design holds a
-  bounded in-memory `MessageQueue` per agent for pushes that arrive
-  while the tunnel is disconnected. Lost on broker restart; operator
-  re-POSTs are the recovery path. A persistent queue (Redis stream,
-  NATS jetstream) is a future option, decided once a real
-  multi-replica deployment lands.
-- **Multi-replica routing.** Single-replica works out of the box.
-  Multi-replica needs either sticky LB routing on `agent_id` or a
-  shared registry. Either is feasible behind the existing
-  `AgentRegistry` interface; the call gets made when needed.
+- **Reconnect & redelivery semantics.** The in-memory
+  `MessageQueue` is the default for single-instance deployments
+  (lossy across restarts). The optional Redis backend
+  (`features = ["redis"]`, env `OVERACP_REDIS_URL`) provides
+  durable per-agent inbox streams (`XADD` / `XREADGROUP`) with
+  XAUTOCLAIM orphan recovery and a dead-letter queue. See
+  [`docs/design/ha.md`](./docs/design/ha.md).
+- **Multi-replica routing.** Resolved. The Redis backend uses
+  ownership leases (`SET EX` + Lua CAS heartbeat) keyed on the
+  tunnel holder. `deliver()` writes to the per-agent inbox stream
+  unconditionally; the owner's consumer drains it. SSE fan-out
+  uses Redis pub/sub. No sticky LB required — consistent-hash on
+  `agent_id` is an optional optimization. See
+  [`docs/design/ha.md`](./docs/design/ha.md).
 - **`turn/end` vs webhook.** Currently a notification fanned out
   over SSE for the operator to consume. Some operators may prefer a
   push webhook (HTTP POST from the broker to a configured URL on

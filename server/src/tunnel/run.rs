@@ -3,22 +3,25 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::future::pending;
+
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::time;
-use tracing::{info, trace};
+use tracing::{info, trace, warn};
 
 use crate::auth::Claims;
 use crate::hooks::{BootProvider, QuotaPolicy, ToolHost};
-use crate::registry::{AgentEntry, AgentRegistry, MessageQueue};
-use crate::tunnel::broker::StreamBroker;
+use crate::registry::agent::AgentRegistryProvider;
+use crate::registry::queue::MessageQueueProvider;
+use crate::tunnel::broker::StreamBrokerProvider;
 use crate::tunnel::dispatch::handle_message;
 
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Context passed to message handlers. Carries the agent's claims,
-/// the in-memory routing state (`registry`, `stream_broker`,
+/// the routing state (`registry`, `stream_broker`,
 /// `message_queue`), and the three operator hooks the dispatch
 /// table delegates to (`BootProvider`, `ToolHost`, `QuotaPolicy`).
 ///
@@ -28,9 +31,9 @@ const PING_INTERVAL: Duration = Duration::from_secs(20);
 /// dispatch runs the JWT has already been validated.
 pub struct TunnelContext {
     pub claims: Claims,
-    pub registry: AgentRegistry,
-    pub message_queue: MessageQueue,
-    pub stream_broker: Arc<StreamBroker>,
+    pub registry: Arc<dyn AgentRegistryProvider>,
+    pub message_queue: Arc<dyn MessageQueueProvider>,
+    pub stream_broker: Arc<dyn StreamBrokerProvider>,
     pub boot_provider: Arc<dyn BootProvider>,
     pub tool_host: Arc<dyn ToolHost>,
     pub quota_policy: Arc<dyn QuotaPolicy>,
@@ -45,27 +48,41 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
 
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
-    // Register the agent in the routing table.
-    ctx.registry
-        .register(agent_id, AgentEntry::new(tx, claims.clone()));
+    // Keep a local clone of the sender for dispatch responses and
+    // buffered-frame delivery. The original `tx` is moved into the
+    // registry via `acquire`.
+    let local_tx = tx.clone();
+
+    // Acquire a tunnel lease (registers the agent in the routing
+    // table; in Redis mode also takes the ownership lock and starts
+    // the heartbeat + inbox consumer).
+    let lease = match ctx.registry.acquire(agent_id, tx, claims.clone()).await {
+        Ok(lease) => lease,
+        Err(e) => {
+            warn!(%agent_id, "failed to acquire tunnel lease: {e}");
+            return;
+        }
+    };
 
     // Drain any session/message pushes that arrived while this
     // agent's tunnel was disconnected. The drain happens before we
     // yield to the read loop so the agent sees the buffered frames
     // first.
-    let buffered = ctx.message_queue.drain(agent_id);
+    let buffered = ctx.message_queue.drain(agent_id).await;
     if !buffered.is_empty() {
         info!(
             %agent_id,
             count = buffered.len(),
             "draining buffered session/message frames on reconnect"
         );
-        if let Some(entry) = ctx.registry.get(agent_id) {
-            for frame in buffered {
-                let _ = entry.tx.send(frame);
-            }
+        for frame in buffered {
+            let _ = local_tx.send(frame);
         }
     }
+
+    // Subscribe to control signals (takeover / disconnect) so
+    // cross-instance events can close this tunnel.
+    let mut control_rx = ctx.registry.control_receiver(agent_id);
 
     info!(%agent_id, role = %claims.role, "tunnel connected");
 
@@ -102,44 +119,62 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
         }
     });
 
-    // Read loop.
-    while let Some(Ok(msg)) = ws_rx.next().await {
-        match msg {
-            Message::Text(text) => {
-                trace!(%agent_id, payload = %text, "agent→server");
-                if let Some(entry) = ctx.registry.get(agent_id) {
-                    entry.touch();
-                }
+    // Read loop — also listens for control signals so cross-instance
+    // takeover / disconnect events can close the tunnel promptly.
+    loop {
+        tokio::select! {
+            ws_msg = ws_rx.next() => {
+                let Some(Ok(msg)) = ws_msg else { break; };
+                match msg {
+                    Message::Text(text) => {
+                        trace!(%agent_id, payload = %text, "agent→server");
+                        ctx.registry.touch(agent_id).await;
 
-                // Best-effort fan-out of stream/* and turn/end
-                // notifications to the in-memory broker so SSE
-                // subscribers receive them. Cheap string sniff to
-                // avoid parsing every frame twice.
-                if text.contains("\"stream/")
-                    || text.contains("\"turn/end\"")
-                    || text.contains("\"heartbeat\"")
-                {
-                    let sender = ctx.stream_broker.sender_for(agent_id);
-                    let _ = sender.send(text.to_string());
-                }
+                        // Best-effort fan-out of stream/* and turn/end
+                        // notifications to the broker so SSE subscribers
+                        // receive them. Cheap string sniff to avoid
+                        // parsing every frame twice.
+                        if text.contains("\"stream/")
+                            || text.contains("\"turn/end\"")
+                            || text.contains("\"heartbeat\"")
+                        {
+                            ctx.stream_broker
+                                .publish(agent_id, text.to_string())
+                                .await;
+                        }
 
-                if let Some(response) = handle_message(&text, &ctx).await {
-                    trace!(%agent_id, payload = %response, "server→agent");
-                    if let Some(entry) = ctx.registry.get(agent_id) {
-                        let _ = entry.tx.send(response);
+                        if let Some(response) = handle_message(&text, &ctx).await {
+                            trace!(%agent_id, payload = %response, "server→agent");
+                            let _ = local_tx.send(response);
+                        }
                     }
+                    Message::Close(_) => {
+                        info!(%agent_id, "tunnel closed by client");
+                        break;
+                    }
+                    _ => {}
                 }
             }
-            Message::Close(_) => {
-                info!(%agent_id, "tunnel closed by client");
+            Some(signal) = recv_control(&mut control_rx) => {
+                info!(%agent_id, signal = %signal, "control signal, closing tunnel");
                 break;
             }
-            _ => {}
         }
     }
 
-    ctx.registry.unregister(agent_id);
+    // Dropping the lease unregisters the agent (in-memory) or
+    // releases the ownership lock (Redis).
+    drop(lease);
     ping_task.abort();
     write_task.abort();
     info!(%agent_id, "tunnel disconnected");
+}
+
+/// Helper for `tokio::select!`: yields the next control signal, or
+/// pends forever when no control receiver is present (in-memory mode).
+async fn recv_control(rx: &mut Option<mpsc::UnboundedReceiver<String>>) -> Option<String> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => pending().await,
+    }
 }
