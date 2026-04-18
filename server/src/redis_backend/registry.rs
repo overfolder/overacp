@@ -12,11 +12,11 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::StreamExt;
 use redis::aio::ConnectionManager;
-use redis::AsyncCommands;
+use redis::{AsyncCommands, Script};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::auth::Claims;
@@ -37,6 +37,17 @@ struct ClaimsSnapshot {
     user: Option<Uuid>,
     connected_at: String,
 }
+
+/// Lua script: atomic EXISTS + XADD. Checks the owner key exists before
+/// writing to the inbox, preventing orphaned messages when the owner
+/// disconnects between the two operations.
+const DELIVER_SCRIPT: &str = r#"
+if redis.call("EXISTS", KEYS[1]) == 1 then
+    redis.call("XADD", KEYS[2], "*", "frame", ARGV[1])
+    return 1
+end
+return 0
+"#;
 
 pub struct RedisAgentRegistry {
     conn: ConnectionManager,
@@ -115,36 +126,24 @@ impl AgentRegistryProvider for RedisAgentRegistry {
     }
 
     async fn deliver(&self, agent_id: Uuid, frame: String) -> DeliveryOutcome {
-        let key = owner_key(agent_id);
+        let owner = owner_key(agent_id);
+        let inbox = inbox_key(agent_id);
         let mut conn = self.conn.clone();
 
-        // Check if any instance owns the tunnel.
-        let exists: bool = redis::cmd("EXISTS")
-            .arg(&key)
-            .query_async(&mut conn)
-            .await
-            .unwrap_or(false);
-
-        if !exists {
-            return DeliveryOutcome::NoTunnel(frame);
-        }
-
-        // Produce unconditionally to the inbox stream.
-        let inbox = inbox_key(agent_id);
-        let result: Result<String, _> = redis::cmd("XADD")
-            .arg(&inbox)
-            .arg("*")
-            .arg("frame")
+        // Atomic EXISTS + XADD via Lua to prevent orphaned messages
+        // when the owner disconnects between the two operations.
+        let delivered: i32 = Script::new(DELIVER_SCRIPT)
+            .key(&owner)
+            .key(&inbox)
             .arg(&frame)
-            .query_async(&mut conn)
-            .await;
+            .invoke_async(&mut conn)
+            .await
+            .unwrap_or(0);
 
-        match result {
-            Ok(_) => DeliveryOutcome::Live,
-            Err(e) => {
-                debug!(%agent_id, "inbox XADD failed: {e}");
-                DeliveryOutcome::NoTunnel(frame)
-            }
+        if delivered == 1 {
+            DeliveryOutcome::Live
+        } else {
+            DeliveryOutcome::NoTunnel(frame)
         }
     }
 

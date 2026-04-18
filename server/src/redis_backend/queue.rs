@@ -7,12 +7,22 @@
 
 use async_trait::async_trait;
 use redis::aio::ConnectionManager;
-use redis::{AsyncCommands, Script};
+use redis::Script;
 use uuid::Uuid;
 
 use crate::registry::queue::{MessageQueueProvider, QueueError};
 
 use super::keys::buffer_key;
+
+/// Lua script: atomic XRANGE + DEL. Reads all entries and deletes the
+/// stream in one round-trip so no push can slip in between.
+const DRAIN_SCRIPT: &str = r#"
+local entries = redis.call("XRANGE", KEYS[1], "-", "+", "COUNT", ARGV[1])
+if #entries > 0 then
+    redis.call("DEL", KEYS[1])
+end
+return entries
+"#;
 
 /// Lua script: atomic check-length-then-add. Returns 1 on success,
 /// 0 if the stream already has >= capacity entries.
@@ -72,34 +82,26 @@ impl MessageQueueProvider for RedisMessageQueue {
         let key = buffer_key(agent_id);
         let mut conn = self.conn.clone();
 
-        // Read all entries.
-        let entries: Vec<(String, Vec<(String, String)>)> = redis::cmd("XRANGE")
-            .arg(&key)
-            .arg("-")
-            .arg("+")
-            .arg("COUNT")
+        // Atomic XRANGE + DEL via Lua to avoid losing messages pushed
+        // between the two commands.
+        let result: Result<Vec<(String, Vec<(String, String)>)>, _> = Script::new(DRAIN_SCRIPT)
+            .key(&key)
             .arg(self.per_agent_capacity)
-            .query_async(&mut conn)
-            .await
-            .unwrap_or_default();
+            .invoke_async(&mut conn)
+            .await;
 
-        if entries.is_empty() {
-            return Vec::new();
+        match result {
+            Ok(entries) => entries
+                .into_iter()
+                .filter_map(|(_id, fields)| {
+                    fields
+                        .into_iter()
+                        .find(|(k, _)| k == "frame")
+                        .map(|(_, v)| v)
+                })
+                .collect(),
+            Err(_) => Vec::new(),
         }
-
-        // Delete the stream key entirely (atomic drain).
-        let _: Result<(), _> = conn.del(&key).await;
-
-        // Extract frame values from the stream entries.
-        entries
-            .into_iter()
-            .filter_map(|(_id, fields)| {
-                fields
-                    .into_iter()
-                    .find(|(k, _)| k == "frame")
-                    .map(|(_, v)| v)
-            })
-            .collect()
     }
 
     async fn len(&self, agent_id: Uuid) -> usize {

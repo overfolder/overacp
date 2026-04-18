@@ -66,6 +66,10 @@ pub fn spawn_consumer(
         let mut c = conn;
         let mut poll_count: u64 = 0;
 
+        // First pass: drain pending entries (auto-claimed from dead consumers).
+        // After draining pending, switch to reading new messages.
+        let mut read_id = "0".to_string();
+
         loop {
             poll_count += 1;
 
@@ -74,12 +78,15 @@ pub fn spawn_consumer(
                 .group(CONSUMER_GROUP, &consumer_id)
                 .count(1);
 
-            let reply: Result<StreamReadReply, _> = c.xread_options(&[&key], &[">"], &opts).await;
+            let reply: Result<StreamReadReply, _> =
+                c.xread_options(&[&key], &[read_id.as_str()], &opts).await;
 
             match reply {
                 Ok(reply) if !reply.keys.is_empty() => {
+                    let mut had_entries = false;
                     for stream_key in &reply.keys {
                         for entry in &stream_key.ids {
+                            had_entries = true;
                             let frame = entry.map.get("frame").and_then(|v| {
                                 if let redis::Value::BulkString(bytes) = v {
                                     String::from_utf8(bytes.clone()).ok()
@@ -106,8 +113,16 @@ pub fn spawn_consumer(
                             }
                         }
                     }
+                    if !had_entries && read_id == "0" {
+                        // No more pending entries; switch to reading new.
+                        read_id = ">".to_string();
+                    }
                 }
                 Ok(_) => {
+                    if read_id == "0" {
+                        // No pending entries; switch to reading new.
+                        read_id = ">".to_string();
+                    }
                     // No messages — idle poll.
                     time::sleep(Duration::from_millis(IDLE_POLL_MS)).await;
                 }
@@ -126,8 +141,13 @@ pub fn spawn_consumer(
     })
 }
 
-/// Return type of the XAUTOCLAIM Redis command: `(cursor, entries)`.
-type AutoclaimResult = (String, Vec<(String, Vec<(String, redis::Value)>)>);
+/// Return type of the XAUTOCLAIM Redis command: `(cursor, entries, deleted_ids)`.
+/// Redis 7.0+ returns a 3-element array.
+type AutoclaimResult = (
+    String,
+    Vec<(String, Vec<(String, redis::Value)>)>,
+    Vec<String>,
+);
 
 /// Reclaim orphaned entries from dead consumers and either redeliver
 /// or dead-letter them.
@@ -149,7 +169,7 @@ async fn autoclaim_orphaned(
         .query_async(conn)
         .await;
 
-    let (_cursor, entries) = match result {
+    let (_cursor, entries, _deleted) = match result {
         Ok(r) => r,
         Err(e) => {
             debug!(%agent_id, "xautoclaim error (may be normal): {e}");
