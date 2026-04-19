@@ -18,6 +18,11 @@ For the high-level architecture and milestone roadmap see
   the Kafka-Connect-shaped REST API for managing compute pools and
   agent lifecycle. Replaced by the stateless message broker model in
   [`SPEC.md`](../../SPEC.md). Kept for context only.
+- [`context-management.md`](./context-management.md) — how
+  over/ACP separates the agent's working context from the operator's
+  canonical conversation record. Covers auto-compaction, the
+  `context/compacted` notification, agent-internal scaffolding, and
+  the optional memory-flush hook.
 - [`workspace-sync.md`](./workspace-sync.md) — pluggable workspace
   hydration and persistence: where it lives in the architecture
   (agent supervisor, not the broker), the `WorkspaceSync` trait,

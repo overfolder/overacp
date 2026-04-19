@@ -48,10 +48,19 @@ pub const TOOLS_CALL: &str = "tools/call";
 // ── Turn lifecycle + quota ──────────────────────────────────────────
 
 /// Agent → server. Fire-and-forget notification marking the end of
-/// a turn; carries the turn's messages and usage. The broker fans it
-/// out to SSE subscribers; the operator's backend is responsible for
-/// persisting the data.
+/// a turn. The broker fans it out to SSE subscribers.
+///
+/// **`messages` is deprecated** — agents SHOULD send only `usage`.
+/// Per-turn persistence is reconstructed from `stream/*`
+/// notifications; the authoritative post-compaction snapshot is
+/// emitted via [`CONTEXT_COMPACTED`].
 pub const TURN_END: &str = "turn/end";
+
+/// Agent → server. Fire-and-forget notification emitted after the
+/// agent compacts its working context. Carries a prose `summary` of
+/// the dropped messages and the surviving `messages` window. The
+/// operator SHOULD persist this as the new canonical history.
+pub const CONTEXT_COMPACTED: &str = "context/compacted";
 
 /// Agent → server. Ask the operator's `QuotaPolicy` whether the next
 /// turn is allowed.

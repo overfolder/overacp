@@ -24,8 +24,8 @@ pub use jwt::{
     ROLE_AGENT,
 };
 pub use messages::{
-    Activity, Content, Heartbeat, InitializeRequest, InitializeResponse, Message,
-    QuotaCheckRequest, QuotaCheckResponse, QuotaUpdateRequest, QuotaUpdateResponse, Role,
+    Activity, Content, ContextCompactedParams, Heartbeat, InitializeRequest, InitializeResponse,
+    Message, QuotaCheckRequest, QuotaCheckResponse, QuotaUpdateRequest, QuotaUpdateResponse, Role,
     SessionCancelParams, SessionMessageParams, TextDelta, ToolCallNotification,
     ToolResultNotification, TurnEndParams, Usage,
 };

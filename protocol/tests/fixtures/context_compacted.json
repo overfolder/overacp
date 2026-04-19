@@ -1,0 +1,8 @@
+{
+  "summary": "User asked to refactor auth middleware. We identified the legacy session token storage and agreed on JWT-based replacement.",
+  "messages": [
+    { "role": "user", "content": "now deploy it" },
+    { "role": "assistant", "content": "Deploying to staging..." }
+  ],
+  "usage": { "input_tokens": 1200, "output_tokens": 400 }
+}

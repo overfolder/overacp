@@ -10,6 +10,16 @@ pub struct Config {
     pub mcp_servers: Vec<String>,
     pub max_iterations: usize,
     pub timeout_minutes: u64,
+    /// Total context window in tokens. Env: `CONTEXT_WINDOW`.
+    pub context_window: usize,
+    /// Fraction of the context window at which auto-compaction kicks
+    /// in. Env: `COMPACTION_THRESHOLD`.
+    pub compaction_threshold: f64,
+    /// Number of most-recent messages kept during compaction. Env:
+    /// `COMPACTION_KEEP_RECENT`.
+    pub compaction_keep_recent: usize,
+    /// Max compaction rounds per session. Env: `MAX_COMPACTIONS`.
+    pub max_compactions: usize,
     /// Process-local identity. Attached as a tracing span field and,
     /// when the `sentry` feature is enabled, as a Sentry tag.
     pub agent_name: Option<String>,
@@ -59,6 +69,26 @@ impl Config {
             .parse()
             .unwrap_or(60);
 
+        let context_window: usize = env::var("CONTEXT_WINDOW")
+            .unwrap_or_else(|_| "128000".into())
+            .parse()
+            .unwrap_or(128_000);
+
+        let compaction_threshold: f64 = env::var("COMPACTION_THRESHOLD")
+            .unwrap_or_else(|_| "0.80".into())
+            .parse()
+            .unwrap_or(0.80);
+
+        let compaction_keep_recent: usize = env::var("COMPACTION_KEEP_RECENT")
+            .unwrap_or_else(|_| "10".into())
+            .parse()
+            .unwrap_or(10);
+
+        let max_compactions: usize = env::var("MAX_COMPACTIONS")
+            .unwrap_or_else(|_| "3".into())
+            .parse()
+            .unwrap_or(3);
+
         let agent_name = env::var("OVERLOOP_AGENT_NAME")
             .ok()
             .map(|s| s.trim().to_string())
@@ -105,6 +135,10 @@ impl Config {
             mcp_servers,
             max_iterations,
             timeout_minutes,
+            context_window,
+            compaction_threshold,
+            compaction_keep_recent,
+            max_compactions,
             agent_name,
             sentry_dsn,
             sentry_environment,
@@ -133,6 +167,10 @@ mod tests {
             "MCP_SERVERS",
             "MAX_ITERATIONS",
             "TIMEOUT_MINUTES",
+            "CONTEXT_WINDOW",
+            "COMPACTION_THRESHOLD",
+            "COMPACTION_KEEP_RECENT",
+            "MAX_COMPACTIONS",
             "OVERLOOP_AGENT_NAME",
             "SENTRY_DSN",
             "SENTRY_ENVIRONMENT",
@@ -169,6 +207,10 @@ mod tests {
         assert!(cfg.mcp_servers.is_empty());
         assert_eq!(cfg.max_iterations, 100);
         assert_eq!(cfg.timeout_minutes, 60);
+        assert_eq!(cfg.context_window, 128_000);
+        assert!((cfg.compaction_threshold - 0.80).abs() < f64::EPSILON);
+        assert_eq!(cfg.compaction_keep_recent, 10);
+        assert_eq!(cfg.max_compactions, 3);
         assert!(cfg.agent_name.is_none());
         assert!(cfg.sentry_dsn.is_none());
         assert_eq!(cfg.sentry_environment, "local");

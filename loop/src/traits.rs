@@ -51,10 +51,23 @@ pub trait AcpService {
     /// returns. `id` echoes the one from `stream_tool_call`.
     fn stream_tool_result(&mut self, id: &str, content: &Value, is_error: bool) -> Result<()>;
 
-    /// Fire-and-forget notification emitted when a turn completes,
-    /// carrying the turn's messages and usage totals. The broker fans
-    /// this out to SSE subscribers.
+    /// Fire-and-forget notification emitted when a turn completes.
+    /// The broker fans this out to SSE subscribers.
+    ///
+    /// **`messages` is deprecated** — agents should send only usage.
+    /// The implementation sends an empty `messages` array.
     fn turn_end(&mut self, messages: &[Message], usage: &Usage) -> Result<()>;
+
+    /// Fire-and-forget notification emitted after the agent compacts
+    /// its working context. Carries the prose summary of dropped
+    /// messages and the surviving canonical messages for operator
+    /// persistence.
+    fn context_compacted(
+        &mut self,
+        summary: &str,
+        messages: &[Message],
+        usage: &Usage,
+    ) -> Result<()>;
     fn quota_check(&mut self) -> Result<bool>;
     fn quota_update(&mut self, input_tokens: u64, output_tokens: u64) -> Result<()>;
     /// Block until the next `session/message` or `session/cancel`

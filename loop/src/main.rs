@@ -177,6 +177,10 @@ async fn run(config: Config) -> Result<()> {
         max_iterations: config.max_iterations,
         timeout: Duration::from_secs(config.timeout_minutes * 60),
         model: config.model.clone(),
+        context_window: config.context_window,
+        compaction_threshold: config.compaction_threshold,
+        compaction_keep_recent: config.compaction_keep_recent,
+        max_compactions: config.max_compactions,
         langfuse_capture_input: config.langfuse_capture_input,
     };
 

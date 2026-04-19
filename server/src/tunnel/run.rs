@@ -130,12 +130,13 @@ pub async fn run_tunnel(ws: WebSocket, claims: Claims, ctx: Arc<TunnelContext>) 
                         trace!(%agent_id, payload = %text, "agent→server");
                         ctx.registry.touch(agent_id).await;
 
-                        // Best-effort fan-out of stream/* and turn/end
-                        // notifications to the broker so SSE subscribers
-                        // receive them. Cheap string sniff to avoid
-                        // parsing every frame twice.
+                        // Best-effort fan-out of stream/*, turn/end,
+                        // and context/compacted notifications to the
+                        // broker so SSE subscribers receive them. Cheap
+                        // string sniff to avoid parsing every frame twice.
                         if text.contains("\"stream/")
                             || text.contains("\"turn/end\"")
+                            || text.contains("\"context/compacted\"")
                             || text.contains("\"heartbeat\"")
                         {
                             ctx.stream_broker

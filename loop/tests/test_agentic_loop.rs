@@ -136,6 +136,15 @@ impl AcpService for MockAcp {
         Ok(())
     }
 
+    fn context_compacted(
+        &mut self,
+        _summary: &str,
+        _messages: &[Message],
+        _usage: &Usage,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn quota_check(&mut self) -> Result<bool> {
         Ok(self.quota_allowed)
     }
@@ -213,6 +222,10 @@ fn default_config() -> LoopConfig {
         max_iterations: 10,
         timeout: Duration::from_secs(30),
         model: "test-model".into(),
+        context_window: 128_000,
+        compaction_threshold: 0.80,
+        compaction_keep_recent: 10,
+        max_compactions: 3,
         langfuse_capture_input: false,
     }
 }
@@ -425,6 +438,10 @@ async fn test_timeout() {
         max_iterations: 10,
         timeout: Duration::from_millis(0),
         model: "test-model".into(),
+        context_window: 128_000,
+        compaction_threshold: 0.80,
+        compaction_keep_recent: 10,
+        max_compactions: 3,
         langfuse_capture_input: false,
     };
 
@@ -543,6 +560,10 @@ async fn test_wind_down_injects_system_message_when_iterations_remaining_equals_
         max_iterations: 5,
         timeout: Duration::from_secs(30),
         model: "test-model".into(),
+        context_window: 128_000,
+        compaction_threshold: 0.80,
+        compaction_keep_recent: 10,
+        max_compactions: 3,
         langfuse_capture_input: false,
     };
 

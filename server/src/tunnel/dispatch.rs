@@ -57,10 +57,10 @@ pub async fn handle_message(text: &str, ctx: &TunnelContext) -> Option<String> {
         )),
 
         // Notifications — agent → server, no response. The read loop
-        // fans `stream/*`, `turn/end`, and `heartbeat` out to the
-        // in-memory broker for SSE subscribers.
+        // fans `stream/*`, `turn/end`, `context/compacted`, and
+        // `heartbeat` out to the in-memory broker for SSE subscribers.
         "stream/textDelta" | "stream/activity" | "stream/toolCall" | "stream/toolResult"
-        | "turn/end" | "heartbeat" => {
+        | "turn/end" | "context/compacted" | "heartbeat" => {
             debug!(method, %agent_id, "tunnel notification");
             None
         }
@@ -306,11 +306,22 @@ mod tests {
     async fn turn_end_is_a_notification() {
         let ctx = ctx_default(Uuid::new_v4());
         let resp = handle_message(
-            r#"{"jsonrpc":"2.0","method":"turn/end","params":{"messages":[]}}"#,
+            r#"{"jsonrpc":"2.0","method":"turn/end","params":{"usage":{"input_tokens":100,"output_tokens":50}}}"#,
             &ctx,
         )
         .await;
         assert!(resp.is_none(), "turn/end is fire-and-forget");
+    }
+
+    #[tokio::test]
+    async fn context_compacted_is_a_notification() {
+        let ctx = ctx_default(Uuid::new_v4());
+        let resp = handle_message(
+            r#"{"jsonrpc":"2.0","method":"context/compacted","params":{"summary":"test","messages":[],"usage":{"input_tokens":0,"output_tokens":0}}}"#,
+            &ctx,
+        )
+        .await;
+        assert!(resp.is_none(), "context/compacted is fire-and-forget");
     }
 
     #[tokio::test]

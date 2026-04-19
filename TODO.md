@@ -81,6 +81,25 @@ crate landed. All items block calling the loop "protocol-conformant".
       deployment adapters can supply tool descriptors without
       touching the supervisor.
 
+## 0.3.y — context management
+
+See [`docs/design/context-management.md`](./docs/design/context-management.md).
+
+- [x] Auto-compaction at configurable threshold (default 80% of 128K).
+      LLM summarizes older messages; agent injects
+      `<compacted_context>` system message into working context.
+- [x] `context/compacted` notification — emits summary + canonical
+      surviving messages to operator for persistence.
+- [x] `turn/end` messages field deprecated — agents send usage only.
+- [x] Configurable thresholds via env vars: `CONTEXT_WINDOW`,
+      `COMPACTION_THRESHOLD`, `COMPACTION_KEEP_RECENT`,
+      `MAX_COMPACTIONS`.
+- [x] Per-session compaction cap (default 3).
+- [ ] Optional `memory_flush` tool hook — invoke an operator-provided
+      tool before summarizing so long-term facts can be extracted.
+- [ ] Live turn marker — inject `<turn>` system message before
+      current user input. Agent-internal, no protocol change.
+
 ## 0.4 — `overacp-server`: stateless message broker (landed)
 
 The centerpiece. A small HTTP + WebSocket router that terminates

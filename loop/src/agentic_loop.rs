@@ -18,8 +18,6 @@ use crate::traits::{AcpService, LlmService};
 /// Maximum characters captured for tool input/output in a Langfuse span.
 const LF_TRUNCATE: usize = 4096;
 
-const CONTEXT_WINDOW: usize = 128_000;
-const COMPACTION_THRESHOLD: f64 = 0.80;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const WIND_DOWN_ITERS: usize = 5;
 
@@ -32,6 +30,18 @@ pub struct LoopConfig {
     /// Model name recorded on Langfuse generation spans. Free-form label;
     /// the trace is untouched when the `SessionTrace` is disabled.
     pub model: String,
+    /// Total context window in tokens. Defaults to 128,000.
+    pub context_window: usize,
+    /// Fraction of `context_window` at which auto-compaction triggers.
+    /// Defaults to 0.80.
+    pub compaction_threshold: f64,
+    /// Number of most-recent messages to preserve during compaction.
+    /// Defaults to 10.
+    pub compaction_keep_recent: usize,
+    /// Maximum number of compaction rounds per session. After this
+    /// limit the agent stops compacting and lets the LLM hit a
+    /// natural length limit. Defaults to 3.
+    pub max_compactions: usize,
     /// When true, attach a redacted chat-log snapshot to Langfuse
     /// generation `input`. Off by default.
     pub langfuse_capture_input: bool,
@@ -51,6 +61,7 @@ pub async fn run(
     let mut last_heartbeat = Instant::now();
     let mut response_text = String::new();
     let mut tool_count: usize = 0;
+    let mut compaction_count: usize = 0;
 
     for iteration in 0..config.max_iterations {
         // Timeout check
@@ -74,12 +85,30 @@ pub async fn run(
 
         // Compaction check
         let est_tokens = estimate_tokens(messages);
-        if est_tokens as f64 > CONTEXT_WINDOW as f64 * COMPACTION_THRESHOLD {
+        let threshold = config.context_window as f64 * config.compaction_threshold;
+        if est_tokens as f64 > threshold && compaction_count < config.max_compactions {
             info!(
-                "Context at ~{}% — compacting",
-                est_tokens * 100 / CONTEXT_WINDOW
+                "Context at ~{}% — compacting ({}/{})",
+                est_tokens * 100 / config.context_window,
+                compaction_count + 1,
+                config.max_compactions,
             );
-            *messages = compact_messages(llm, messages, 10).await?;
+            let result = compact_messages(llm, messages, config.compaction_keep_recent).await?;
+            if !result.summary.is_empty() {
+                if let Err(e) =
+                    acp.context_compacted(&result.summary, &result.canonical_messages, &total_usage)
+                {
+                    error!("Failed to emit context/compacted: {}", e);
+                }
+                compaction_count += 1;
+            }
+            *messages = result.working_messages;
+        } else if est_tokens as f64 > threshold {
+            warn!(
+                "Context at ~{}% but compaction cap ({}) reached — skipping",
+                est_tokens * 100 / config.context_window,
+                config.max_compactions,
+            );
         }
 
         // Wind-down warning
