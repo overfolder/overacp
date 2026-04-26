@@ -31,7 +31,7 @@ jsonwebtoken = { workspace = true }
 dotenvy = { workspace = true }
 
 # Optional Redis/Valkey backend for multi-instance HA.
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "streams"], optional = true }
+redis = { version = "1.2", features = ["tokio-comp", "connection-manager", "streams"], optional = true }
 
 [features]
 redis = ["dep:redis"]
