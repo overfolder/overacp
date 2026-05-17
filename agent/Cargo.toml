@@ -35,14 +35,14 @@ rustls = { version = "0.23", features = ["ring"] }
 # who don't want Sentry pay no compile-time or runtime cost. Enable
 # with `--features sentry`; runtime activation still requires
 # `SENTRY_DSN`.
-sentry = { version = "0.47", default-features = false, features = [
+sentry = { version = "0.48", default-features = false, features = [
     "backtrace",
     "contexts",
     "reqwest",
     "rustls",
     "tracing",
 ], optional = true }
-sentry-tracing = { version = "0.47", optional = true }
+sentry-tracing = { version = "0.48", optional = true }
 overacp-common = { path = "../common", optional = true }
 
 [features]
